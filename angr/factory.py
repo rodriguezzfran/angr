@@ -421,7 +421,7 @@ class AngrObjectFactory:
     def multi_blocks(
             self,
             addr: int,
-            size=None,  # I think this is not necessary
+            size=None,  # I think this is not necessary for multi-block lifting
             thumb=False,
             backup_state=None,
             opt_level=None,
