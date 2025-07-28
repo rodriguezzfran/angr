@@ -176,6 +176,7 @@ class Block(Serializable):
         const_prop=False,
         initial_regs=None,
         skip_stmts=False,
+        irsb: IRSB | PcodeIRSB | None = None,
     ):
         if arch is not None:
             self.arch = arch
@@ -208,8 +209,8 @@ class Block(Serializable):
         if self._project is None and byte_string is None:
             raise ValueError('"byte_string" has to be specified if "project" is not provided.')
 
-        self._vex = None
-        self._vex_nostmt = None
+        self._vex = irsb if (irsb is not None and not skip_stmts) else None
+        self._vex_nostmt = irsb if (irsb is not None and skip_stmts) else None
         self._disassembly = None
         self._capstone = None
         self._collect_data_refs = collect_data_refs
@@ -227,6 +228,8 @@ class Block(Serializable):
         if size is None:
             if byte_string is not None:
                 size = len(byte_string)
+            elif irsb is not None:
+                size = irsb.size
             else:
                 vex = self._lift_nocache(skip_stmts)
                 size = vex.size

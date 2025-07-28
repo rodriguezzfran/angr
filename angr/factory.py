@@ -5,6 +5,7 @@ import threading
 from typing import overload, TYPE_CHECKING
 
 import archinfo
+import pyvex
 from archinfo.arch_soot import ArchSoot, SootAddressDescriptor
 
 from .knowledge_plugins.functions import Function
@@ -403,7 +404,23 @@ class AngrObjectFactory:
         return Block(addr, project=self.project, size=size, backup_state=backup_state)
 
     def multi_blocks(
-        self, addr, *, max_blocks: int | None = 100, collect_data_refs: bool = False, skip_stmts: bool = False
+        self,
+        addr: int,
+        size=None, # I think this is not necessary
+        thumb=False,
+        backup_state=None,
+        opt_level=None,
+        num_inst=None,
+        traceflags=0,
+        insn_bytes=None,
+        strict_block_end=None,
+        collect_data_refs: bool=False,
+        cross_insn_opt=True,
+        load_from_ro_regions=False,
+        const_prop=False,
+        initial_regs=None,
+        skip_stmts=False,
+        max_blocks: int | None = 100
     ) -> list[Block]:
         """
         Lifts multiple blocks starting at a given address. After lifting one block, the lifter will attempt to lift
@@ -416,19 +433,57 @@ class AngrObjectFactory:
         :return:                    A list of Block objects
         """
 
-        vex_engine = cast(VEXLifter | PcodeLifterEngineMixin, self.project.factory.default_engine)  # type: ignore | cast temporal
+        vex_engine: VEXLifter = self.project.factory.default_engine  # type: ignore
 
         # TODO: Ensure that the engine supports multi-block lifting
         if not vex_engine.support_multiblock_lifting:
             raise AngrError(f"The vex engine {vex_engine.__class__.__name__} does not support multi-block lifting.")
+        
+        # Add get clemory
+        clemory = None
+        if self.project is not None:
+            clemory = (
+                self.project.loader.memory_ro_view
+                if self.project.loader.memory_ro_view is not None
+                else self.project.loader.memory
+            )
+
+        initial_regs = initial_regs if (collect_data_refs or const_prop) else None
+
+        if initial_regs is not None:
+            for offset, size, value in initial_regs:  # pylint:disable=not-an-iterable
+                pyvex.pvc.register_initial_register_value(offset, size, value)
 
         irsbs = vex_engine.lift_vex_multi(
-            addr, max_blocks=max_blocks, collect_data_refs=collect_data_refs, skip_stmts=skip_stmts
+            addr=addr,
+            state = backup_state,
+            clemory=clemory,
+            insn_bytes=insn_bytes,
+            arch=self.project.arch,
+            size=size,
+            num_inst=num_inst,
+            traceflags=traceflags,
+            thumb=thumb,
+            opt_level=opt_level,
+            strict_block_end=strict_block_end,
+            skip_stmts=skip_stmts,
+            collect_data_refs=collect_data_refs,
+            cross_insn_opt=cross_insn_opt,
+            load_from_ro_regions=load_from_ro_regions,
+            const_prop=const_prop,
+            max_blocks=max_blocks
         )
+
+        if initial_regs:
+            pyvex.pvc.reset_initial_register_values()
 
         blocks = []
         for irsb in irsbs:
-            block = Block(irsb.addr, project=self.project, size=irsb.size)
+            block = Block(irsb.addr,
+                          project=self.project,
+                          arch=self.project.arch,
+                          thumb=thumb,
+                          backup_state=backup_state)
             blocks.append(block)
 
         return blocks
