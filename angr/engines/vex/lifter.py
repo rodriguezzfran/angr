@@ -7,7 +7,7 @@ from cachetools import LRUCache
 
 import pyvex
 import cle
-from archinfo import ArchARM
+from archinfo import ArchARM, Arch
 import claripy
 
 from angr.engines.engine import SimEngine
@@ -26,7 +26,7 @@ VEX_IRSB_MAX_INST = 99
 class LiftConfig:
     """Configuration for VEX lifting operations."""
     addr: int
-    arch: object
+    arch: Arch
     size: int
     num_inst: Optional[int]
     thumb: int
@@ -65,7 +65,7 @@ class VEXLifter(SimEngine):
         default_strict_block_end=False,
         **kwargs,
     ):
-        super().__init__(project, support_multiblock_lifting = True, **kwargs)
+        super().__init__(project, support_multiblock_lifting=True, **kwargs)
 
         self._use_cache = use_cache
         self._default_opt_level = default_opt_level
@@ -154,34 +154,42 @@ class VEXLifter(SimEngine):
         """
 
         # Use common phases
-        addr, arch = self._validate_lift_parameters(state, clemory, insn_bytes, addr, arch)
-        config = self._setup_lift_defaults(
-            addr, arch, state, size, num_inst, opt_level, cross_insn_opt,
-            strict_block_end, skip_stmts, offset, traceflags, collect_data_refs,
-            load_from_ro_regions, const_prop
-        )
+        addr, arch = self._validate_lift_parameters(state, clemory, insn_bytes,
+                                                    addr, arch)
+        config = self._setup_lift_defaults(addr, arch, state, size, num_inst,
+                                           opt_level, cross_insn_opt,
+                                           strict_block_end, skip_stmts,
+                                           offset, traceflags,
+                                           collect_data_refs,
+                                           load_from_ro_regions, const_prop)
         config.thumb = int(thumb)
         config = self._normalize_thumb(config)
 
         have_patches = self.project and self.project.kb.patches.items()
 
         # FIXME: cache ignores provided state
-        use_cache = self._use_cache and not (skip_stmts or collect_data_refs or have_patches or const_prop)
+        use_cache = self._use_cache and not (skip_stmts or collect_data_refs
+                                             or have_patches or const_prop)
 
         # phase 3: check cache
         cache_key = None
         if use_cache:
-            cache_key = (config.addr, insn_bytes, config.size, config.num_inst, config.thumb, config.opt_level, config.strict_block_end, config.cross_insn_opt)
+            cache_key = (config.addr, insn_bytes, config.size, config.num_inst,
+                         config.thumb, config.opt_level,
+                         config.strict_block_end, config.cross_insn_opt)
             if cache_key in self._block_cache:
                 self._block_cache_hits += 1
-                l.debug("Cache hit IRSB of %s at %#x", config.arch, config.addr)
+                l.debug("Cache hit IRSB of %s at %#x", config.arch,
+                        config.addr)
                 irsb = self._block_cache[cache_key]
                 stop_point = self._first_stoppoint(irsb, extra_stop_points)
                 if stop_point is None:
                     return irsb
                 config.size = stop_point - config.addr
                 # check the cache again
-                cache_key = (config.addr, insn_bytes, config.size, config.num_inst, config.thumb, config.opt_level, config.strict_block_end, config.cross_insn_opt)
+                cache_key = (config.addr, insn_bytes, config.size,
+                             config.num_inst, config.thumb, config.opt_level,
+                             config.strict_block_end, config.cross_insn_opt)
                 if cache_key in self._block_cache:
                     self._block_cache_hits += 1
                     return self._block_cache[cache_key]
@@ -209,13 +217,18 @@ class VEXLifter(SimEngine):
         # vex_lift breakpoints only triggered when the cache isn't used
         buff = NO_OVERRIDE
         if state:
-            state._inspect("vex_lift", BP_BEFORE, vex_lift_addr=config.addr, vex_lift_size=config.size, vex_lift_buff=NO_OVERRIDE)
+            state._inspect("vex_lift",
+                           BP_BEFORE,
+                           vex_lift_addr=config.addr,
+                           vex_lift_size=config.size,
+                           vex_lift_buff=NO_OVERRIDE)
             buff = state._inspect_getattr("vex_lift_buff", NO_OVERRIDE)
             config.addr = state._inspect_getattr("vex_lift_addr", config.addr)
             config.size = state._inspect_getattr("vex_lift_size", config.size)
 
         # phase 4: get bytes
-        byte_buffer = self._prepare_byte_buffer(config, state, clemory, insn_bytes, buff)
+        byte_buffer = self._prepare_byte_buffer(config, state, clemory,
+                                                insn_bytes, buff)
 
         # phase 5: call into pyvex
         buff: bytes | claripy.ast.BV
@@ -249,7 +262,10 @@ class VEXLifter(SimEngine):
                 if use_cache:
                     self._block_cache[cache_key] = irsb
                 if state:
-                    state._inspect("vex_lift", BP_AFTER, vex_lift_addr=config.addr, vex_lift_size=config.size)
+                    state._inspect("vex_lift",
+                                   BP_AFTER,
+                                   vex_lift_addr=config.addr,
+                                   vex_lift_size=config.size)
                 return irsb
 
         # phase x: error handling
@@ -258,7 +274,8 @@ class VEXLifter(SimEngine):
             if isinstance(byte_buffer.data, bytes):
                 l.debug("Using bytes: %r", byte_buffer.data)
             else:
-                l.debug("Using bytes: %r", pyvex.ffi.buffer(byte_buffer.data, byte_buffer.size))
+                l.debug("Using bytes: %r",
+                        pyvex.ffi.buffer(byte_buffer.data, byte_buffer.size))
             raise SimTranslationError("Unable to translate bytecode") from e
 
     def lift_vex_multi(
@@ -310,20 +327,24 @@ class VEXLifter(SimEngine):
         """
 
         # Use common phases (no cache, no stop points)
-        addr, arch = self._validate_lift_parameters(state, clemory, insn_bytes, addr, arch)
-        config = self._setup_lift_defaults(
-            addr, arch, state, size, num_inst, opt_level, cross_insn_opt,
-            strict_block_end, skip_stmts, offset, traceflags, collect_data_refs,
-            load_from_ro_regions, const_prop
-        )
+        addr, arch = self._validate_lift_parameters(state, clemory, insn_bytes,
+                                                    addr, arch)
+        config = self._setup_lift_defaults(addr, arch, state, size, num_inst,
+                                           opt_level, cross_insn_opt,
+                                           strict_block_end, skip_stmts,
+                                           offset, traceflags,
+                                           collect_data_refs,
+                                           load_from_ro_regions, const_prop)
         config.thumb = int(thumb)
         config = self._normalize_thumb(config)
 
         # phase 4: get bytes (simplified for multi-block lifting)
-        byte_buffer = self._prepare_byte_buffer(config, state, clemory, insn_bytes)
+        byte_buffer = self._prepare_byte_buffer(config, state, clemory,
+                                                insn_bytes)
 
         # phase 5: call into pyvex (single call, no loop for stop points)
-        l.debug("Creating multi-block IRSB of %s at %#x", config.arch, config.addr)
+        l.debug("Creating multi-block IRSB of %s at %#x", config.arch,
+                config.addr)
         try:
             irsb_list: list[pyvex.IRSB] = pyvex.lift_multi(
                 data=byte_buffer.data,
@@ -348,14 +369,20 @@ class VEXLifter(SimEngine):
             if isinstance(byte_buffer.data, bytes):
                 l.debug("Using bytes: %r", byte_buffer.data)
             else:
-                l.debug("Using bytes: %r", pyvex.ffi.buffer(byte_buffer.data, byte_buffer.size))
+                l.debug("Using bytes: %r",
+                        pyvex.ffi.buffer(byte_buffer.data, byte_buffer.size))
             raise SimTranslationError("Unable to translate bytecode") from e
 
     def _load_bytes(
-        self, addr, max_size, state=None, clemory: cle.Clemory | cle.ClemoryReadOnlyView | None = None
+        self,
+        addr,
+        max_size,
+        state=None,
+        clemory: cle.Clemory | cle.ClemoryReadOnlyView | None = None
     ) -> tuple[bytes, int, int]:
         if clemory is None and state is None:
-            raise SimEngineError("state and clemory cannot both be None in _load_bytes().")
+            raise SimEngineError(
+                "state and clemory cannot both be None in _load_bytes().")
 
         buff, size, offset = b"", 0, 0
 
@@ -391,12 +418,16 @@ class VEXLifter(SimEngine):
                                 "think you ought to be able to, open an issue."
                             )
                         else:
-                            raise TypeError(f"Unsupported backer type {type(backer)}.")
+                            raise TypeError(
+                                f"Unsupported backer type {type(backer)}.")
             elif state:
                 if state.memory.SUPPORTS_CONCRETE_LOAD:
                     buff = state.memory.concrete_load(addr, max_size)
                 else:
-                    buff = state.solver.eval(state.memory.load(addr, max_size, inspect=False), cast_to=bytes)
+                    buff = state.solver.eval(state.memory.load(addr,
+                                                               max_size,
+                                                               inspect=False),
+                                             cast_to=bytes)
                 size = len(buff)
 
         # If that didn't work and if load_from_state is enabled, try to load from the state
@@ -404,9 +435,13 @@ class VEXLifter(SimEngine):
             if state.memory.SUPPORTS_CONCRETE_LOAD:
                 buff = state.memory.concrete_load(addr, max_size)
             else:
-                buff = state.solver.eval(state.memory.load(addr, max_size, inspect=False), cast_to=bytes)
+                buff = state.solver.eval(state.memory.load(addr,
+                                                           max_size,
+                                                           inspect=False),
+                                         cast_to=bytes)
             size = len(buff)
-            if self.selfmodifying_code and size < min(max_size, 10):  # arbitrary metric for doing the slow path
+            if self.selfmodifying_code and size < min(
+                    max_size, 10):  # arbitrary metric for doing the slow path
                 l.debug("SMC slow path")
                 buff_lst = []
                 symbolic_warned = False
@@ -415,7 +450,8 @@ class VEXLifter(SimEngine):
                         byte = state.memory.load(addr + i, 1, inspect=False)
                         if byte.symbolic and not symbolic_warned:
                             symbolic_warned = True
-                            l.warning("Executing symbolic code at %#x", addr + i)
+                            l.warning("Executing symbolic code at %#x",
+                                      addr + i)
                         buff_lst.append(state.solver.eval(byte))
                     except SimError:
                         break
@@ -442,7 +478,8 @@ class VEXLifter(SimEngine):
                     if self.__is_stop_point(addr, extra_stop_points):
                         # could this part be moved by pyvex?
                         return addr
-                    if stmt.delta != 0 and self.__is_stop_point(stmt.addr, extra_stop_points):
+                    if stmt.delta != 0 and self.__is_stop_point(
+                            stmt.addr, extra_stop_points):
                         return addr
 
                 first_imark = False
@@ -451,8 +488,7 @@ class VEXLifter(SimEngine):
     def __is_stop_point(self, addr, extra_stop_points=None):
         return bool(
             (self.project is not None and addr in self.project._sim_procedures)
-            or (extra_stop_points is not None and addr in extra_stop_points)
-        )
+            or (extra_stop_points is not None and addr in extra_stop_points))
 
     def __getstate__(self):
         ostate = super().__getstate__()
@@ -471,9 +507,9 @@ class VEXLifter(SimEngine):
         s, ostate = state
         self._use_cache = s["_use_cache"]
         self._default_opt_level = s["_default_opt_level"]
-        self.selfmodifying_code = (
-            s["selfmodifying_code"] if "selfmodifying_code" in s else s["_support_selfmodifying_code"]
-        )
+        self.selfmodifying_code = (s["selfmodifying_code"]
+                                   if "selfmodifying_code" in s else
+                                   s["_support_selfmodifying_code"])
         self._single_step = s["_single_step"]
         self._cache_size = s["_cache_size"]
         self.default_strict_block_end = s["default_strict_block_end"]
@@ -489,7 +525,7 @@ class VEXLifter(SimEngine):
         insn_bytes: bytes | None,
         addr,
         arch,
-    ) -> tuple[int, object]:
+    ) -> tuple[int, Arch]:
         """Phase 0: Sanity check and parameter validation."""
         if not state and not clemory and not insn_bytes:
             raise ValueError("Must provide state or clemory or insn_bytes!")
@@ -512,7 +548,7 @@ class VEXLifter(SimEngine):
     def _setup_lift_defaults(
         self,
         addr: int,
-        arch: object,
+        arch: Arch,
         state,
         size: int | None,
         num_inst: int | None,
@@ -538,7 +574,8 @@ class VEXLifter(SimEngine):
         if opt_level is None:
             opt_level = 1 if state and o.OPTIMIZE_IR in state.options else self._default_opt_level
         if cross_insn_opt is None:
-            cross_insn_opt = not (state and o.NO_CROSS_INSN_OPT in state.options)
+            cross_insn_opt = not (state
+                                  and o.NO_CROSS_INSN_OPT in state.options)
         if strict_block_end is None:
             strict_block_end = self.default_strict_block_end
         if self.selfmodifying_code and opt_level > 0:
@@ -601,15 +638,19 @@ class VEXLifter(SimEngine):
                 buff, size = insn_bytes, len(insn_bytes)
                 offset = config.offset  # offset stays unchanged
             else:
-                buff, size, offset = self._load_bytes(config.addr, config.size, state, clemory)
+                buff, size, offset = self._load_bytes(config.addr, config.size,
+                                                      state, clemory)
         else:
             size = config.size
             offset = config.offset
 
         if isinstance(buff, claripy.ast.BV):
             if len(buff) == 0:
-                raise SimEngineError(f"No bytes in memory for block starting at {config.addr:#x}.")
+                raise SimEngineError(
+                    f"No bytes in memory for block starting at {config.addr:#x}."
+                )
         elif not buff:
-            raise SimEngineError(f"No bytes in memory for block starting at {config.addr:#x}.")
+            raise SimEngineError(
+                f"No bytes in memory for block starting at {config.addr:#x}.")
 
         return ByteBuffer(data=buff, size=size, offset=offset)
