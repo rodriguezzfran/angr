@@ -421,13 +421,10 @@ class AngrObjectFactory:
     def multi_blocks(
             self,
             addr: int,
-            size=None,  # I think this is not necessary for multi-block lifting
             thumb=False,
             backup_state=None,
             opt_level=None,
-            num_inst=None,
             traceflags=0,
-            insn_bytes=None,
             strict_block_end=None,
             collect_data_refs: bool = False,
             cross_insn_opt=True,
@@ -465,17 +462,14 @@ class AngrObjectFactory:
                                         or const_prop) else None
 
         if initial_regs is not None:
-            for offset, size, value in initial_regs:  # pylint:disable=not-an-iterable
-                pyvex.pvc.register_initial_register_value(offset, size, value)
+            for offset, init_regs_size, value in initial_regs:  # pylint:disable=not-an-iterable
+                pyvex.pvc.register_initial_register_value(offset, init_regs_size, value)
 
         irsbs = vex_engine.lift_vex_multi(
             addr=addr,
             state=backup_state,
             clemory=clemory,
-            insn_bytes=insn_bytes,
             arch=self.project.arch,
-            size=size,
-            num_inst=num_inst,
             traceflags=traceflags,
             thumb=thumb,
             opt_level=opt_level,
