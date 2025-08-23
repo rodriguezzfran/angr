@@ -154,14 +154,14 @@ class VEXLifter(SimEngine):
         """
 
         # Use common phases
-        addr, arch = self._validate_lift_parameters(state, clemory, insn_bytes,
-                                                    addr, arch)
-        config = self._setup_lift_defaults(addr, arch, state, size, num_inst,
-                                           opt_level, cross_insn_opt,
-                                           strict_block_end, skip_stmts,
-                                           offset, traceflags,
-                                           collect_data_refs,
-                                           load_from_ro_regions, const_prop)
+        addr, arch = self._validate_lift_parameters(state=state, clemory=clemory, insn_bytes=insn_bytes,
+                                                    addr=addr, arch=arch)
+        config = self._setup_lift_defaults(addr=addr, arch=arch, state=state, size=size, num_inst=num_inst,
+                                           opt_level=opt_level, cross_insn_opt=cross_insn_opt,
+                                           strict_block_end=strict_block_end, skip_stmts=skip_stmts,
+                                           offset=offset, traceflags=traceflags,
+                                           collect_data_refs=collect_data_refs,
+                                           load_from_ro_regions=load_from_ro_regions, const_prop=const_prop)
         config.thumb = int(thumb)
         config = self._normalize_thumb(config)
 
@@ -283,11 +283,7 @@ class VEXLifter(SimEngine):
         addr: int,
         state=None,
         clemory: cle.Clemory | cle.ClemoryReadOnlyView | None = None,
-        insn_bytes: bytes | None = None,
-        offset=None,
         arch=None,
-        size=None,
-        num_inst=None,
         traceflags=0,
         thumb=False,
         opt_level=None,
@@ -308,11 +304,7 @@ class VEXLifter(SimEngine):
         :param addr:            The address at which to start the block.
         :param state:           A state to use as a data source.
         :param clemory:         A cle.memory.Clemory object to use as a data source.
-        :param insn_bytes:      A string of bytes to use as a data source.
-        :param offset:          If using insn_bytes, the number of bytes in it to skip over.
         :param arch:            Architecture to use.
-        :param size:            The maximum size of each block, in bytes.
-        :param num_inst:        The maximum number of instructions per block.
         :param traceflags:      traceflags to be passed to VEX. (default: 0)
         :param thumb:           Whether the block should be lifted in ARM's THUMB mode.
         :param opt_level:       The VEX optimization level to use.
@@ -326,21 +318,19 @@ class VEXLifter(SimEngine):
         :return:                A list of lifted IRSBs.
         """
 
-        # Use common phases (no cache, no stop points)
-        addr, arch = self._validate_lift_parameters(state, clemory, insn_bytes,
-                                                    addr, arch)
-        config = self._setup_lift_defaults(addr, arch, state, size, num_inst,
-                                           opt_level, cross_insn_opt,
-                                           strict_block_end, skip_stmts,
-                                           offset, traceflags,
-                                           collect_data_refs,
-                                           load_from_ro_regions, const_prop)
+        addr, arch = self._validate_lift_parameters(state=state, clemory=clemory,
+                                                    addr=addr, arch=arch)
+        config = self._setup_lift_defaults(addr=addr, arch=arch, state=state,
+                                           opt_level=opt_level, cross_insn_opt=cross_insn_opt,
+                                           strict_block_end=strict_block_end, skip_stmts=skip_stmts,
+                                           traceflags=traceflags,
+                                           collect_data_refs=collect_data_refs,
+                                           load_from_ro_regions=load_from_ro_regions, const_prop=const_prop)
         config.thumb = int(thumb)
         config = self._normalize_thumb(config)
 
         # phase 4: get bytes (simplified for multi-block lifting)
-        byte_buffer = self._prepare_byte_buffer(config, state, clemory,
-                                                insn_bytes)
+        byte_buffer = self._prepare_byte_buffer(config, state, clemory)
 
         # phase 5: call into pyvex (single call, no loop for stop points)
         l.debug("Creating multi-block IRSB of %s at %#x", config.arch,
@@ -350,8 +340,6 @@ class VEXLifter(SimEngine):
                 data=byte_buffer.data,
                 addr=config.addr + config.thumb,
                 arch=config.arch,
-                max_bytes=byte_buffer.size,
-                max_inst=config.num_inst,
                 bytes_offset=byte_buffer.offset + config.thumb,
                 max_blocks=max_blocks,
                 opt_level=config.opt_level,
@@ -629,7 +617,7 @@ class VEXLifter(SimEngine):
         config: LiftConfig,
         state,
         clemory: cle.Clemory | cle.ClemoryReadOnlyView | None,
-        insn_bytes: bytes | None,
+        insn_bytes: bytes | None=None,
         buff=NO_OVERRIDE,
     ) -> ByteBuffer:
         """Phase 4: Get bytes and prepare buffer."""
