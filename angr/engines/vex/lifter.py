@@ -20,6 +20,7 @@ l = logging.getLogger(__name__)
 
 VEX_IRSB_MAX_SIZE = 400
 VEX_IRSB_MAX_INST = 99
+VEX_SRC_DATA_MAX_SIZE = 32000000  # 32MB Testing for multi_block lifting
 
 
 @dataclass
@@ -320,12 +321,12 @@ class VEXLifter(SimEngine):
 
         addr, arch = self._validate_lift_parameters(state=state, clemory=clemory,
                                                     addr=addr, arch=arch)
-        config = self._setup_lift_defaults(addr=addr, arch=arch, state=state,
+        config = self._setup_lift_defaults(addr=addr, arch=arch, state=state, size =VEX_SRC_DATA_MAX_SIZE,
                                            opt_level=opt_level, cross_insn_opt=cross_insn_opt,
                                            strict_block_end=strict_block_end, skip_stmts=skip_stmts,
                                            traceflags=traceflags,
                                            collect_data_refs=collect_data_refs,
-                                           load_from_ro_regions=load_from_ro_regions, const_prop=const_prop)
+                                           load_from_ro_regions=load_from_ro_regions, const_prop=const_prop, multi_block=True)
         config.thumb = int(thumb)
         config = self._normalize_thumb(config)
 
@@ -549,12 +550,13 @@ class VEXLifter(SimEngine):
         collect_data_refs: bool,
         load_from_ro_regions: bool,
         const_prop: bool,
+        multi_block: bool = False,
     ) -> LiftConfig:
         """Phase 1: Set parameter defaults."""
         if size is not None:
-            size = min(size, VEX_IRSB_MAX_SIZE)
+            size = min(size, VEX_IRSB_MAX_SIZE) if not multi_block else min(size, VEX_SRC_DATA_MAX_SIZE)
         if size is None:
-            size = VEX_IRSB_MAX_SIZE
+            size = VEX_IRSB_MAX_SIZE if not multi_block else VEX_SRC_DATA_MAX_SIZE
         if num_inst is not None:
             num_inst = min(num_inst, VEX_IRSB_MAX_INST)
         if num_inst is None and self._single_step:
