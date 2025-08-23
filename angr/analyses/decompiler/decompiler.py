@@ -21,12 +21,13 @@ from .region_identifier import RegionIdentifier
 from .optimization_passes.optimization_pass import OptimizationPassStage
 from .ailgraph_walker import AILGraphWalker
 from .condition_processor import ConditionProcessor
-from .decompilation_options import DecompilationOption
+from .decompilation_options import DecompilationOption, PARAM_TO_OPTION
 from .decompilation_cache import DecompilationCache
 from .utils import remove_edges_in_ailgraph
 from .sequence_walker import SequenceWalker
 from .structuring.structurer_nodes import SequenceNode
 from .presets import DECOMPILATION_PRESETS, DecompilationPreset
+from .notes import DecompilationNote
 
 if TYPE_CHECKING:
     from angr.knowledge_plugins.cfg.cfg_model import CFGModel
@@ -80,7 +81,7 @@ class Decompiler(Analysis):
             func = self.kb.functions[func]
         self.func: Function = func
         self._cfg = cfg.model if isinstance(cfg, CFGFast) else cfg
-        self._options = options or []
+        self._options = self._parse_options(options) if options else []
 
         if preset is None and optimization_passes:
             self._optimization_passes = optimization_passes
@@ -145,6 +146,7 @@ class Decompiler(Analysis):
         self._copied_var_ids: set[int] = set()
         self._optimization_scratch: dict[str, Any] = {}
         self.expr_collapse_depth = expr_collapse_depth
+        self.notes: dict[str, DecompilationNote] = {}
 
         if decompile:
             with self._resilience():
@@ -170,6 +172,20 @@ class Decompiler(Analysis):
         a, b = self._cache_parameters, cache.parameters
         id_checks = {"cfg", "variable_kb"}
         return all(a[k] is b[k] if k in id_checks else a[k] == b[k] for k in self._cache_parameters)
+
+    @staticmethod
+    def _parse_options(options: list[tuple[DecompilationOption | str, Any]]) -> list[tuple[DecompilationOption, Any]]:
+        """
+        Parse the options and return a list of option tuples.
+        """
+
+        converted_options = []
+        for o, v in options:
+            if isinstance(o, str):
+                # convert to DecompilationOption
+                o = PARAM_TO_OPTION[o]
+            converted_options.append((o, v))
+        return converted_options
 
     @timethis
     def _decompile(self):
@@ -222,6 +238,7 @@ class Decompiler(Analysis):
         # determine a few arguments according to the structuring algorithm
         fold_callexprs_into_conditions = False
         self._force_loop_single_exit = True
+        self._refine_loops_with_single_successor = False
         self._complete_successors = False
         self._recursive_structurer_params = self.options_to_params(self.options_by_class["recursive_structurer"])
         if "structurer_cls" not in self._recursive_structurer_params:
@@ -229,6 +246,7 @@ class Decompiler(Analysis):
         # is the algorithm based on Phoenix (a schema-based algorithm)?
         if issubclass(self._recursive_structurer_params["structurer_cls"], PhoenixStructurer):
             self._force_loop_single_exit = False
+            # self._refine_loops_with_single_successor = True
             self._complete_successors = True
             fold_callexprs_into_conditions = True
 
@@ -261,10 +279,12 @@ class Decompiler(Analysis):
                 desired_variables=self._desired_variables,
                 optimization_scratch=self._optimization_scratch,
                 force_loop_single_exit=self._force_loop_single_exit,
+                refine_loops_with_single_successor=self._refine_loops_with_single_successor,
                 complete_successors=self._complete_successors,
                 ail_graph=self._clinic_graph,
                 arg_vvars=self._clinic_arg_vvars,
                 start_stage=self._clinic_start_stage,
+                notes=self.notes,
                 **self.options_to_params(self.options_by_class["clinic"]),
             )
         else:
@@ -375,6 +395,7 @@ class Decompiler(Analysis):
                 const_formats=old_codegen.const_formats if old_codegen is not None else None,
                 externs=clinic.externs,
                 binop_depth_cutoff=self.expr_collapse_depth,
+                notes=self.notes,
                 **self.options_to_params(self.options_by_class["codegen"]),
             )
 
@@ -396,6 +417,7 @@ class Decompiler(Analysis):
             cond_proc=condition_processor,
             update_graph=update_graph,
             force_loop_single_exit=self._force_loop_single_exit,
+            refine_loops_with_single_successor=self._refine_loops_with_single_successor,
             complete_successors=self._complete_successors,
             entry_node_addr=self.clinic.entry_node_addr,
             **self.options_to_params(self.options_by_class["region_identifier"]),
@@ -444,6 +466,7 @@ class Decompiler(Analysis):
                 entry_node_addr=self.clinic.entry_node_addr,
                 scratch=self._optimization_scratch,
                 force_loop_single_exit=self._force_loop_single_exit,
+                refine_loops_with_single_successor=self._refine_loops_with_single_successor,
                 complete_successors=self._complete_successors,
                 **kwargs,
             )
@@ -507,6 +530,7 @@ class Decompiler(Analysis):
                 entry_node_addr=self.clinic.entry_node_addr,
                 scratch=self._optimization_scratch,
                 force_loop_single_exit=self._force_loop_single_exit,
+                refine_loops_with_single_successor=self._refine_loops_with_single_successor,
                 complete_successors=self._complete_successors,
                 peephole_optimizations=self._peephole_optimizations,
                 avoid_vvar_ids=self._copied_var_ids,
@@ -538,7 +562,13 @@ class Decompiler(Analysis):
                 continue
 
             pass_ = timethis(pass_)
-            a = pass_(self.func, seq=seq_node, scratch=self._optimization_scratch, **kwargs)
+            a = pass_(
+                self.func,
+                seq=seq_node,
+                scratch=self._optimization_scratch,
+                peephole_optimizations=self._peephole_optimizations,
+                **kwargs,
+            )
             if a.out_seq:
                 seq_node = a.out_seq
 
