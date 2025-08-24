@@ -4546,6 +4546,26 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
             initial_regs = self._get_initial_registers(addr, cfg_job, current_function_addr)
 
+            # Test to lift multiple blocks
+            try:
+                blocks_list = self.project.factory.multi_blocks(
+                    addr,
+                    collect_data_refs = True,
+                    strict_block_end = True,
+                    load_from_ro_regions = True,
+                    initial_regs =initial_regs,
+                    backup_state = self._base_state
+                )
+
+                print("Block list lifted successfully")
+
+                for block in blocks_list:
+                    block.pp()
+                    exit()
+                    #return None, None, None, None
+            except Exception as e:
+                print(f"Error lifting multiple blocks: {e}")
+
             # Let's try to create the pyvex IRSB directly, since it's much faster
             nodecode = False
             irsb: pyvex.IRSB | PcodeIRSB | None = None

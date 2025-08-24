@@ -19,10 +19,6 @@ from .codenode import HookNode, SyscallNode
 from .block import Block, SootBlock
 from .sim_manager import SimulationManager
 
-from typing import cast  # Temporal
-from angr.engines.vex import VEXLifter  # Temporal
-from angr.engines.pcode.lifter import PcodeLifterEngineMixin  # Temporal
-
 try:
     from .engines import UberEnginePcode
     from .engines.pcode import register_pcode_arch_default_cc
@@ -444,7 +440,7 @@ class AngrObjectFactory:
         :return:                    A list of Block objects
         """
 
-        vex_engine: VEXLifter = self.project.factory.default_engine  # type: ignore
+        vex_engine = self.project.factory.default_engine  # type: ignore
 
         # TODO: Ensure that the engine supports multi-block lifting
         if not vex_engine.support_multiblock_lifting:
