@@ -4565,6 +4565,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     #return None, None, None, None
             except Exception as e:
                 print(f"Error lifting multiple blocks: {e}")
+                exit()
 
             # Let's try to create the pyvex IRSB directly, since it's much faster
             nodecode = False

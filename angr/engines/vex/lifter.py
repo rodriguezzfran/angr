@@ -342,9 +342,10 @@ class VEXLifter(SimEngine):
                 addr=config.addr + config.thumb,
                 arch=config.arch,
                 bytes_offset=byte_buffer.offset + config.thumb,
+                max_bytes=byte_buffer.size,
                 max_blocks=max_blocks,
                 opt_level=config.opt_level,
-                traceflags=config.traceflags,
+                trace_flags=config.traceflags,
                 collect_data_refs=config.collect_data_refs,
                 load_from_ro_regions=config.load_from_ro_regions,
                 skip_stmts=config.skip_stmts,
@@ -354,12 +355,12 @@ class VEXLifter(SimEngine):
             )
             return irsb_list
         except pyvex.PyVEXError as e:
-            l.debug("VEX multi-block translation error at %#x", config.addr)
+            print("VEX multi-block translation error at %#x", config.addr)
             if isinstance(byte_buffer.data, bytes):
-                l.debug("Using bytes: %r", byte_buffer.data)
+                print("Using bytes: %r", byte_buffer.data)
             else:
-                l.debug("Using bytes: %r",
-                        pyvex.ffi.buffer(byte_buffer.data, byte_buffer.size))
+                print("Using bytes AA: %r",
+                       pyvex.ffi.buffer(byte_buffer.data, byte_buffer.size))
             raise SimTranslationError("Unable to translate bytecode") from e
 
     def _load_bytes(
@@ -509,11 +510,11 @@ class VEXLifter(SimEngine):
 
     def _validate_lift_parameters(
         self,
-        state,
-        clemory: cle.Clemory | cle.ClemoryReadOnlyView | None,
-        insn_bytes: bytes | None,
-        addr,
-        arch,
+        state=None,
+        clemory: cle.Clemory | cle.ClemoryReadOnlyView | None = None,
+        insn_bytes: bytes | None = None,
+        addr=None,
+        arch=None,
     ) -> tuple[int, Arch]:
         """Phase 0: Sanity check and parameter validation."""
         if not state and not clemory and not insn_bytes:
@@ -536,20 +537,20 @@ class VEXLifter(SimEngine):
 
     def _setup_lift_defaults(
         self,
-        addr: int,
-        arch: Arch,
-        state,
-        size: int | None,
-        num_inst: int | None,
-        opt_level: int | None,
-        cross_insn_opt: bool | None,
-        strict_block_end: bool | None,
-        skip_stmts: bool,
-        offset: int | None,
-        traceflags: int,
-        collect_data_refs: bool,
-        load_from_ro_regions: bool,
-        const_prop: bool,
+        addr: int = None,
+        arch: Arch = None,
+        state = None,
+        size: int | None = None,
+        num_inst: int | None = None,
+        opt_level: int | None = None,
+        cross_insn_opt: bool | None = None,
+        strict_block_end: bool | None = None,
+        skip_stmts: bool = False,
+        offset: int | None = None,
+        traceflags: int | None = None,
+        collect_data_refs: bool = False,
+        load_from_ro_regions: bool = False,
+        const_prop: bool = False,
         multi_block: bool = False,
     ) -> LiftConfig:
         """Phase 1: Set parameter defaults."""
