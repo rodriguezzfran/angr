@@ -154,6 +154,27 @@ class VEXLifter(SimEngine):
         :param strict_block_end:   Whether to force blocks to end at all conditional branches (default: false)
         """
 
+        # Print all the arguments
+        print("Argumentos en angr/lift_ vex")
+        print(f"addr: {addr}")
+        print(f"state: {state}")
+        print(f"clemory: {clemory}")
+        print(f"insn_bytes: {insn_bytes}")
+        print(f"offset: {offset}")
+        print(f"arch: {arch}")
+        print(f"size: {size}")
+        print(f"num_inst: {num_inst}")
+        print(f"traceflags: {traceflags}")
+        print(f"thumb: {thumb}")
+        print(f"extra_stop_points: {extra_stop_points}")
+        print(f"opt_level: {opt_level}")
+        print(f"strict_block_end: {strict_block_end}")
+        print(f"skip_stmts: {skip_stmts}")
+        print(f"collect_data_refs: {collect_data_refs}")
+        print(f"cross_insn_opt: {cross_insn_opt}")
+        print(f"load_from_ro_regions: {load_from_ro_regions}")
+        print(f"const_prop: {const_prop}")
+
         # Use common phases
         addr, arch = self._validate_lift_parameters(state=state, clemory=clemory, insn_bytes=insn_bytes,
                                                     addr=addr, arch=arch)
@@ -318,6 +339,21 @@ class VEXLifter(SimEngine):
         :param max_blocks:      The maximum number of blocks to lift. If None, will use default value set on pyvex.
         :return:                A list of lifted IRSBs.
         """
+        # Print all the arguments
+        print("Argumentos en angr/lift_vex_multi")
+        print(f"addr: {addr}")
+        print(f"state: {state}")
+        print(f"clemory: {clemory}")
+        print(f"arch: {arch}")
+        print(f"traceflags: {traceflags}")
+        print(f"thumb: {thumb}")
+        print(f"opt_level: {opt_level}")
+        print(f"strict_block_end: {strict_block_end}")
+        print(f"skip_stmts: {skip_stmts}")
+        print(f"collect_data_refs: {collect_data_refs}")
+        print(f"cross_insn_opt: {cross_insn_opt}")
+        print(f"load_from_ro_regions: {load_from_ro_regions}")
+        print(f"const_prop: {const_prop}")
 
         addr, arch = self._validate_lift_parameters(state=state, clemory=clemory,
                                                     addr=addr, arch=arch)

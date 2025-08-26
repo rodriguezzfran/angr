@@ -4546,26 +4546,26 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
             initial_regs = self._get_initial_registers(addr, cfg_job, current_function_addr)
 
-            # Test to lift multiple blocks
-            try:
-                blocks_list = self.project.factory.multi_blocks(
-                    addr,
-                    collect_data_refs = True,
-                    strict_block_end = True,
-                    load_from_ro_regions = True,
-                    initial_regs =initial_regs,
-                    backup_state = self._base_state
-                )
+            # # Test to lift multiple blocks
+            # try:
+            #     blocks_list = self.project.factory.multi_blocks(
+            #         addr,
+            #         collect_data_refs = True,
+            #         strict_block_end = True,
+            #         load_from_ro_regions = True,
+            #         initial_regs =initial_regs,
+            #         backup_state = self._base_state
+            #     )
 
-                print("Block list lifted successfully")
+            #     print("Block list lifted successfully")
 
-                for block in blocks_list:
-                    block.pp()
-                    exit()
-                    #return None, None, None, None
-            except Exception as e:
-                print(f"Error lifting multiple blocks: {e}")
-                exit()
+            #     for block in blocks_list:
+            #         block.pp()
+            #         exit()
+            #         #return None, None, None, None
+            # except Exception as e:
+            #     print(f"Error lifting multiple blocks: {e}")
+            #     exit()
 
             # Let's try to create the pyvex IRSB directly, since it's much faster
             nodecode = False
@@ -5308,7 +5308,20 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
     def _lift(self, addr, *args, opt_level=1, cross_insn_opt=False, **kwargs):  # pylint:disable=arguments-differ
         kwargs["extra_stop_points"] = set(self._known_thunks)
+
+        # printeamos los argumentos
+        print("Argumentos en primer lift: ")
+        print(f"addres: {addr}")
+        for arg in args:
+            print(f"Argumento: {arg}")
+        print(f"opt_level: {opt_level}")
+        print(f"cross_insn_opt: {cross_insn_opt}")
+        for key, value in kwargs.items():
+            print(f"Keyword argument: {key} = {value}")
+
         return super()._lift(addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)
+
+        
 
     #
     # Public methods
