@@ -4546,26 +4546,14 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
             initial_regs = self._get_initial_registers(addr, cfg_job, current_function_addr)
 
-            # # Test to lift multiple blocks
-            # try:
-            #     blocks_list = self.project.factory.multi_blocks(
-            #         addr,
-            #         collect_data_refs = True,
-            #         strict_block_end = True,
-            #         load_from_ro_regions = True,
-            #         initial_regs =initial_regs,
-            #         backup_state = self._base_state
-            #     )
-
-            #     print("Block list lifted successfully")
-
-            #     for block in blocks_list:
-            #         block.pp()
-            #         exit()
-            #         #return None, None, None, None
-            # except Exception as e:
-            #     print(f"Error lifting multiple blocks: {e}")
-            #     exit()
+            self._lift_multi(
+                addr,
+                collect_data_refs = True,
+                strict_block_end = True,
+                load_from_ro_regions = True,
+                initial_regs =initial_regs,
+                backup_state = self._base_state)
+            exit(1)
 
             # Let's try to create the pyvex IRSB directly, since it's much faster
             nodecode = False
@@ -5305,6 +5293,20 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
         if callee_func is not None:
             return callee_func.returning
         return None
+    
+    def _lift_multi(self, addr, *args, opt_level=1, cross_insn_opt=False, **kwargs):
+        # Test to lift multiple blocks
+        try:
+            blocks_list = self.project.factory.multi_blocks(
+                addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs
+            )
+
+            print("Block list lifted successfully")
+
+            for block in blocks_list:
+                block.pp()
+        except Exception as e:
+            print(f"Error lifting multiple blocks: {e}")
 
     def _lift(self, addr, *args, opt_level=1, cross_insn_opt=False, **kwargs):  # pylint:disable=arguments-differ
         kwargs["extra_stop_points"] = set(self._known_thunks)
