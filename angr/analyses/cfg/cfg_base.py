@@ -2702,17 +2702,6 @@ class CFGBase(Analysis):
         if "backup_state" not in kwargs:
             kwargs["backup_state"] = self._base_state
         
-         # printeamos los argumentos
-        print("Argumentos en primer lift: ")
-        print(f"addres: {addr}")
-        for arg in args:
-            print(f"Argumento: {arg}")
-        print(f"opt_level: {opt_level}")
-        print(f"cross_insn_opt: {cross_insn_opt}")
-        for key, value in kwargs.items():
-            print(f"Keyword argument: {key} = {value}")
-
-
         return self.project.factory.block(addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)
 
     #
