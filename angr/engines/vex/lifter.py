@@ -253,6 +253,8 @@ class VEXLifter(SimEngine):
                     const_prop=config.const_prop,
                 )
 
+
+
                 if subphase == 0 and irsb.statements is not None:
                     # check for possible stop points
                     stop_point = self._first_stoppoint(irsb, extra_stop_points)
@@ -267,7 +269,11 @@ class VEXLifter(SimEngine):
                                    BP_AFTER,
                                    vex_lift_addr=config.addr,
                                    vex_lift_size=config.size)
+                    
+                #irsb.pp()
+                
                 return irsb
+            
 
         # phase x: error handling
         except pyvex.PyVEXError as e:

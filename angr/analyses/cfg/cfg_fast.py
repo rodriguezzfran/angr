@@ -4547,14 +4547,15 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
             initial_regs = self._get_initial_registers(addr, cfg_job, current_function_addr)
 
-            # self._lift_multi(
-            #     addr,
-            #     collect_data_refs = True,
-            #     strict_block_end = True,
-            #     load_from_ro_regions = True,
-            #     initial_regs =initial_regs,
-            #     backup_state = self._base_state)
-            # exit(1)
+            self._lift_multi(
+                addr,
+                collect_data_refs = True,
+                strict_block_end = True,
+                load_from_ro_regions = True,
+                initial_regs =initial_regs,
+                backup_state = self._base_state)
+            exit(1)
+            sleep(700)
 
             # Let's try to create the pyvex IRSB directly, since it's much faster
             nodecode = False
@@ -4572,10 +4573,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                 irsb = lifted_block.vex_nostmt  # may raise SimTranslationError
             except SimTranslationError:
                 nodecode = True
-
-            # print the irsb and the conditonal exits
-            irsb.
-            sleep(60)
 
             irsb_string: bytes = b""
             lifted_block_bytes = lifted_block.bytes if lifted_block.bytes is not None else b""
