@@ -4846,6 +4846,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
         except (SimMemoryError, SimEngineError):
             return None, None, None, None
 
+    def _generate_cfg_nodes():
+        raise NotImplementedError()
+
     def _process_block_arch_specific(
         self, addr: int, cfg_node: CFGNode, irsb: pyvex.IRSB, func_addr: int, caller_gp: int | None = None
     ) -> None:  # pylint: disable=unused-argument
