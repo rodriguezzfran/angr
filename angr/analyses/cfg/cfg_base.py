@@ -903,7 +903,7 @@ class CFGBase(Analysis):
         except KeyError:
             return None
 
-    def _fast_memory_load_pointer(self, addr, size=None):
+    def _fast_memory_load_pointer(self, addr, size=None) -> int | None:
         """
         Perform a fast memory loading of a pointer.
 
@@ -937,7 +937,7 @@ class CFGBase(Analysis):
         """
 
         addrs = set()
-        if isinstance(self._binary, ELF) and self._binary.has_dwarf_info:
+        if (isinstance(self._binary, ELF) and self._binary.has_dwarf_info) or isinstance(self._binary, PE):
             for function_hint in self._binary.function_hints:
                 if function_hint.source == FunctionHintSource.EH_FRAME:
                     addrs.add(function_hint.addr)
