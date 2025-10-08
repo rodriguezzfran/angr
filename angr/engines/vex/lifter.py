@@ -269,11 +269,9 @@ class VEXLifter(SimEngine):
                                    BP_AFTER,
                                    vex_lift_addr=config.addr,
                                    vex_lift_size=config.size)
-                    
-                #irsb.pp()
-                
+
                 return irsb
-            
+
 
         # phase x: error handling
         except pyvex.PyVEXError as e:
