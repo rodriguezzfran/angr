@@ -46,7 +46,6 @@ from .return_maker import ReturnMaker
 from .ailgraph_walker import AILGraphWalker, RemoveNodeNotice
 from .optimization_passes import (
     OptimizationPassStage,
-    RegisterSaveAreaSimplifier,
     StackCanarySimplifier,
     TagSlicer,
     DUPLICATING_OPTS,
@@ -598,6 +597,17 @@ class Clinic(Analysis):
         assert self.func_args is not None
         self._ail_graph = self._transform_to_ssa_level1(self._ail_graph, self.func_args)
 
+        # Run simplification passes
+        self._update_progress(49.0, text="Running simplifications 1.5")
+        self._ail_graph = self._run_simplification_passes(
+            self._ail_graph, stage=OptimizationPassStage.AFTER_SSA_LEVEL1_TRANSFORMATION
+        )
+
+        # register save area has been removed at this point - we should no longer use callee-saved registers in RDA
+        self._register_save_areas_removed = True
+        # clear the cached RDA result
+        self.reaching_definitions = None
+
     def _stage_pre_ssa_level1_simplifications(self) -> None:
         # Simplify blocks
         # we never remove dead memory definitions before making callsites. otherwise stack arguments may go missing
@@ -698,7 +708,10 @@ class Clinic(Analysis):
         # Run simplification passes
         self._update_progress(65.0, text="Running simplifications 3")
         self._ail_graph = self._run_simplification_passes(
-            self._ail_graph, stack_items=self.stack_items, stage=OptimizationPassStage.AFTER_GLOBAL_SIMPLIFICATION
+            self._ail_graph,
+            stack_items=self.stack_items,
+            stage=OptimizationPassStage.AFTER_GLOBAL_SIMPLIFICATION,
+            arg_vvars=self.arg_vvars,
         )
 
         # Simplify the entire function for the third time
@@ -1231,52 +1244,62 @@ class Clinic(Analysis):
     @timethis
     def _replace_tail_jumps_with_calls(self, ail_graph: networkx.DiGraph) -> networkx.DiGraph:
         """
-        Replace tail jumps them with a return statement and a call expression.
+        Rewrite tail jumps to functions as call statements.
         """
         for block in list(ail_graph.nodes()):
-            out_degree = ail_graph.out_degree[block]
-
-            if out_degree != 0:
+            if ail_graph.out_degree[block] > 1:
                 continue
 
             last_stmt = block.statements[-1]
             if isinstance(last_stmt, ailment.Stmt.Jump):
-                # jumping to somewhere outside the current function
-                # rewrite it as a call *if and only if* the target is identified as a function
-                target = last_stmt.target
-                if isinstance(target, ailment.Const):
-                    target_addr = target.value
-                    if self.kb.functions.contains_addr(target_addr):
-                        # replace the statement
-                        target_func = self.kb.functions.get_by_addr(target_addr)
-                        if target_func.returning and self.project.arch.ret_offset is not None:
-                            ret_reg_offset = self.project.arch.ret_offset
-                            ret_expr = ailment.Expr.Register(
-                                None,
-                                None,
-                                ret_reg_offset,
-                                self.project.arch.bits,
-                                reg_name=self.project.arch.translate_register_name(
-                                    ret_reg_offset, size=self.project.arch.bits
-                                ),
-                                **target.tags,
-                            )
-                            call_stmt = ailment.Stmt.Call(
-                                None,
-                                target,
-                                calling_convention=None,  # target_func.calling_convention,
-                                prototype=None,  # target_func.prototype,
-                                ret_expr=ret_expr,
-                                **last_stmt.tags,
-                            )
-                            block.statements[-1] = call_stmt
+                targets = [last_stmt.target]
+                replace_last_stmt = True
+            elif isinstance(last_stmt, ailment.Stmt.ConditionalJump):
+                targets = [last_stmt.true_target, last_stmt.false_target]
+                replace_last_stmt = False
+            else:
+                continue
 
-                            ret_stmt = ailment.Stmt.Return(None, [], **last_stmt.tags)
-                            ret_block = ailment.Block(self.new_block_addr(), 1, statements=[ret_stmt])
-                            ail_graph.add_edge(block, ret_block, type="fake_return")
-                        else:
-                            stmt = ailment.Stmt.Call(None, target, **last_stmt.tags)
-                            block.statements[-1] = stmt
+            for target in targets:
+                if not isinstance(target, ailment.Const) or not self.kb.functions.contains_addr(target.value):
+                    continue
+
+                target_func = self.kb.functions.get_by_addr(target.value)
+
+                ret_reg_offset = self.project.arch.ret_offset
+                if target_func.returning and ret_reg_offset is not None:
+                    ret_expr = ailment.Expr.Register(
+                        None,
+                        None,
+                        ret_reg_offset,
+                        self.project.arch.bits,
+                        reg_name=self.project.arch.translate_register_name(ret_reg_offset, size=self.project.arch.bits),
+                        **target.tags,
+                    )
+                else:
+                    ret_expr = None
+
+                call_stmt = ailment.Stmt.Call(
+                    None,
+                    target.copy(),
+                    calling_convention=None,  # target_func.calling_convention,
+                    prototype=None,  # target_func.prototype,
+                    ret_expr=ret_expr,
+                    **last_stmt.tags,
+                )
+
+                if replace_last_stmt:
+                    call_block = block
+                    block.statements[-1] = call_stmt
+                else:
+                    call_block = ailment.Block(self.new_block_addr(), 1, statements=[call_stmt])
+                    ail_graph.add_edge(block, call_block)
+                    target.value = call_block.addr
+
+                if target_func.returning:
+                    ret_stmt = ailment.Stmt.Return(None, [], **last_stmt.tags)
+                    ret_block = ailment.Block(self.new_block_addr(), 1, statements=[ret_stmt])
+                    ail_graph.add_edge(call_block, ret_block, type="fake_return")
 
         return ail_graph
 
@@ -1443,6 +1466,7 @@ class Clinic(Analysis):
         only_consts=False,
         fold_callexprs_into_conditions=False,
         rewrite_ccalls=True,
+        rename_ccalls=True,
         removed_vvar_ids: set[int] | None = None,
         arg_vvars: dict[int, tuple[ailment.Expr.VirtualVariable, SimVariable]] | None = None,
         preserve_vvar_ids: set[int] | None = None,
@@ -1462,6 +1486,7 @@ class Clinic(Analysis):
                 only_consts=only_consts,
                 fold_callexprs_into_conditions=fold_callexprs_into_conditions,
                 rewrite_ccalls=rewrite_ccalls,
+                rename_ccalls=rename_ccalls,
                 removed_vvar_ids=removed_vvar_ids,
                 arg_vvars=arg_vvars,
                 preserve_vvar_ids=preserve_vvar_ids,
@@ -1480,6 +1505,7 @@ class Clinic(Analysis):
         only_consts=False,
         fold_callexprs_into_conditions=False,
         rewrite_ccalls=True,
+        rename_ccalls=True,
         removed_vvar_ids: set[int] | None = None,
         arg_vvars: dict[int, tuple[ailment.Expr.VirtualVariable, SimVariable]] | None = None,
         preserve_vvar_ids: set[int] | None = None,
@@ -1504,6 +1530,7 @@ class Clinic(Analysis):
             fold_callexprs_into_conditions=fold_callexprs_into_conditions,
             use_callee_saved_regs_at_return=not self._register_save_areas_removed,
             rewrite_ccalls=rewrite_ccalls,
+            rename_ccalls=rename_ccalls,
             removed_vvar_ids=removed_vvar_ids,
             arg_vvars=arg_vvars,
             secondary_stackvars=self.secondary_stackvars,
@@ -1565,11 +1592,6 @@ class Clinic(Analysis):
             if a.out_graph:
                 # use the new graph
                 ail_graph = a.out_graph
-                if isinstance(a, RegisterSaveAreaSimplifier):
-                    # register save area has been removed - we should no longer use callee-saved registers in RDA
-                    self._register_save_areas_removed = True
-                    # clear the cached RDA result
-                    self.reaching_definitions = None
                 self.vvar_id_start = a.vvar_id_start
             if stack_items is not None and a.stack_items:
                 stack_items.update(a.stack_items)

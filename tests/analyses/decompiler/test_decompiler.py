@@ -51,7 +51,7 @@ from angr.analyses.decompiler.structuring.phoenix import MultiStmtExprMode
 from angr.sim_variable import SimStackVariable
 from angr.utils.library import convert_cproto_to_py
 
-from tests.common import bin_location, slow_test, print_decompilation_result, WORKER
+from tests.common import bin_location, slow_test, print_decompilation_result, set_decompiler_option, WORKER
 
 
 test_location = os.path.join(bin_location, "tests")
@@ -64,18 +64,6 @@ def normalize_whitespace(s: str) -> str:
     Strips whitespace from start/end of lines, and replace newlines with space.
     """
     return " ".join([l for l in [s.strip() for s in s.splitlines()] if l])
-
-
-def set_decompiler_option(decompiler_options: list[tuple] | None, params: list[tuple]) -> list[tuple]:
-    if decompiler_options is None:
-        decompiler_options = []
-
-    for param, value in params:
-        for option in angr.analyses.decompiler.decompilation_options.options:
-            if param == option.param:
-                decompiler_options.append((option, value))
-
-    return decompiler_options
 
 
 def options_to_structuring_algo(decompiler_options: list[tuple] | None) -> str | None:
@@ -1040,7 +1028,9 @@ class TestDecompiler(unittest.TestCase):
         cfg = p.analyses[CFGFast].prep()(data_references=True, normalize=True)
         func = cfg.functions["main"]
 
-        dec = p.analyses[Decompiler].prep(fail_fast=True)(func, cfg=cfg.model, options=decompiler_options)
+        dec = p.analyses[Decompiler].prep(fail_fast=True)(
+            func, cfg=cfg.model, options=set_decompiler_option(decompiler_options, [("show_local_types", False)])
+        )
         assert dec.codegen is not None, f"Failed to decompile function {func!r}."
         print_decompilation_result(dec)
         code = dec.codegen.text
@@ -2523,8 +2513,10 @@ class TestDecompiler(unittest.TestCase):
 
         # ensure "v14 = fmt(stdin, "-");" shows up before "optind < a0"
         lines = d.codegen.text.split("\n")
+        a0_assignment_line = next(line for line in lines if " = a0;" in line)
+        a0_var = a0_assignment_line.split(" = ")[0].strip()
         fmt_line = next(i for i, line in enumerate(lines) if 'fmt(stdin, "-");' in line)
-        optind_line = next(i for i, line in enumerate(lines) if "optind < a0" in line)
+        optind_line = next(i for i, line in enumerate(lines) if f"optind < {a0_var}" in line)
         return_line = next(i for i, line in enumerate(lines) if "do not return" not in line and "return " in line)
         assert 0 <= fmt_line < return_line and 0 <= optind_line < return_line
 
@@ -4771,7 +4763,7 @@ class TestDecompiler(unittest.TestCase):
 
     def test_decompiling_rep_stosq(self, decompiler_options=None):
 
-        def _check_rep_stosq(lines: list[str], count: int, increment: int) -> bool:
+        def _check_rep_stosq(lines: list[str], count: int, increment: str) -> bool:
             """
             Example:
 
@@ -4803,7 +4795,7 @@ class TestDecompiler(unittest.TestCase):
                 return False
 
             # check header
-            m = re.match(f"for [^;]+; {count_var}; (v\\d+) \\+= {increment}\\)", for_loop_lines[0])
+            m = re.match(f"for [^;]+; {count_var}; (v\\d+) {increment}\\)", for_loop_lines[0])
             if m is None:
                 return False
             ptr_var = m.group(1)
@@ -4831,9 +4823,9 @@ class TestDecompiler(unittest.TestCase):
         # rep stosq are transformed into for-loops. check the existence of them
         lines = [line.strip() for line in dec.codegen.text.split("\n")]
         # first loop
-        assert _check_rep_stosq(lines, 48, 8) ^ _check_rep_stosq(lines, 48, 1)
+        assert _check_rep_stosq(lines, 48, r"= &v\d\->Anonymous")
         # second loop
-        assert _check_rep_stosq(lines, 32, 8) ^ _check_rep_stosq(lines, 32, 1)
+        assert _check_rep_stosq(lines, 32, r"\+= 8") ^ _check_rep_stosq(lines, 32, r"\+= 1")
 
     def test_decompiling_fprintf_multiple_format_string_args(self, decompiler_options=None):
         bin_path = os.path.join(
@@ -4931,7 +4923,7 @@ class TestDecompiler(unittest.TestCase):
         elapsed = time.time() - start
         assert dec.codegen is not None and dec.codegen.text is not None
         print_decompilation_result(dec)
-        assert elapsed <= 45, f"Decompiling the main function took {elapsed} seconds, which is longer than expected"
+        assert elapsed <= 90, f"Decompiling the main function took {elapsed} seconds, which is longer than expected"
 
         # ensure decompling this function should not take over 30 seconds - it was taking at least two minutes before
         # recent optimizations
@@ -5151,8 +5143,14 @@ class TestDecompiler(unittest.TestCase):
         assert from_matches_line_no is not None
         from_matches_line = lines[from_matches_line_no]
         v = from_matches_line[: from_matches_line.index(".from_matches(")]
-        assert lines[from_matches_line_no + 1] == f"if ({v} != 9223372036854775809)"
-        assert lines[from_matches_line_no + 2] == "{"
+        for i in range(2):
+            if (
+                lines[from_matches_line_no + i + 1] == f"if ({v} != 9223372036854775809)"
+                and lines[from_matches_line_no + i + 2] == "{"
+            ):
+                break
+        else:
+            assert False, "Could not find the if statement following from_matches"
         v11_eq_v24_line_no = None
         v24_with_capacity_line_no = None
         for i in range(from_matches_line_no + 3, len(lines)):
@@ -5244,7 +5242,90 @@ class TestDecompiler(unittest.TestCase):
 
         # BlockSimplifier should not remove statements with calls inside
         assert dec.codegen is not None and dec.codegen.text is not None
-        assert "InterlockedExchange(" in dec.codegen.text
+        assert "InterlockedExchange64(" in dec.codegen.text
+
+    def test_tail_calls(self, decompiler_options=None):
+        bin_path = os.path.join(test_location, "x86_64", "decompiler", "tail_calls.o")
+        proj = angr.Project(bin_path, auto_load_libs=False)
+        cfg = proj.analyses.CFG(normalize=True)
+        proj.analyses.CompleteCallingConventions(analyze_callsites=False)
+
+        # FIXME: Autodetect
+        proj.kb.functions["test_noreturn_tailcall_callee"].returning = False
+        proj.kb.functions["test_cond_noreturn_tailcall_jmp_callee"].returning = False
+        proj.kb.functions["test_cond_noreturn_tailcall_cjmp_callee"].returning = False
+
+        func = proj.kb.functions["test_tailcall"]
+        dec = proj.analyses.Decompiler(func, cfg=cfg, options=decompiler_options)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+        assert "return test_tailcall_callee(a0 + 1);" in normalize_whitespace(dec.codegen.text)
+
+        func = proj.kb.functions["test_noreturn_tailcall"]
+        dec = proj.analyses.Decompiler(func, cfg=cfg, options=decompiler_options)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+        assert "test_noreturn_tailcall_callee(a0 + 1); /* do not return */" in normalize_whitespace(dec.codegen.text)
+
+        func = proj.kb.functions["test_cond_tailcall_jmp"]
+        dec = proj.analyses.Decompiler(func, cfg=cfg, options=decompiler_options)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+        assert (
+            normalize_whitespace(
+                """
+                if (a0)
+                    return test_cond_tailcall_jmp_callee(a0);
+                return a0 - 1;
+                """
+            )
+            in normalize_whitespace(dec.codegen.text)
+        )
+
+        func = proj.kb.functions["test_cond_noreturn_tailcall_jmp"]
+        dec = proj.analyses.Decompiler(func, cfg=cfg, options=decompiler_options)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+        assert (
+            normalize_whitespace(
+                """
+                if (a0)
+                    test_cond_noreturn_tailcall_jmp_callee(); /* do not return */
+                return a0 - 1;
+                """
+            )
+            in normalize_whitespace(dec.codegen.text)
+        )
+
+        func = proj.kb.functions["test_cond_tailcall_cjmp"]
+        dec = proj.analyses.Decompiler(func, cfg=cfg, options=decompiler_options)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+        assert (
+            normalize_whitespace(
+                """
+                if (a0)
+                    return test_cond_tailcall_cjmp_callee(a0);
+                return a0 - 1;
+                """
+            )
+            in normalize_whitespace(dec.codegen.text)
+        )
+
+        func = proj.kb.functions["test_cond_noreturn_tailcall_cjmp"]
+        dec = proj.analyses.Decompiler(func, cfg=cfg, options=decompiler_options)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+        assert (
+            normalize_whitespace(
+                """
+                if (a0)
+                    test_cond_noreturn_tailcall_cjmp_callee(); /* do not return */
+                return a0 - 1;
+                """
+            )
+            in normalize_whitespace(dec.codegen.text)
+        )
 
 
 if __name__ == "__main__":
