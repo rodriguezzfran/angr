@@ -9,6 +9,7 @@ import re
 import string
 from collections import defaultdict, OrderedDict
 from enum import Enum, unique
+from dataclasses import dataclass
 
 import networkx
 from sortedcontainers import SortedDict
@@ -61,6 +62,16 @@ VEX_IRSB_MAX_SIZE = 400
 
 
 l = logging.getLogger(name=__name__)
+
+@dataclass
+class GenerateCFGNodeResult:
+    """
+    The result of generating a CFG node.
+    """
+    add: int | None
+    current_func_addr: int | None
+    cfg_node: CFGNode | None
+    irsb: pyvex.IRSB | PcodeIRSB | None
 
 
 class ContinueScanningNotification(RuntimeError):
@@ -4612,6 +4623,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
             initial_regs = self._get_initial_registers(addr, cfg_job, current_function_addr)
 
+            print("AAAAAAAAAAAAAAAAAAAAAAAAAAA")
+
             # self._lift_multi(
             #     addr,
             #     collect_data_refs = True,
@@ -4864,8 +4877,206 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
         except (SimMemoryError, SimEngineError):
             return None, None, None, None
 
-    def _generate_cfg_nodes():
-        raise NotImplementedError()
+    def _calculate_block_max_distance(self, addr, real_addr) -> int:
+        distance = VEX_IRSB_MAX_SIZE
+        # if there is exception handling code, check the distance between `addr` and the closest ending address
+        if self._exception_handling_by_endaddr:
+            next_end = next(self._exception_handling_by_endaddr.irange(minimum=real_addr), None)
+            if next_end is not None:
+                distance = min(distance, next_end - real_addr)
+
+        # if possible, check the distance between `addr` and the end of this section
+        obj = self.project.loader.find_object_containing(addr, membership_check=False)
+        if obj:
+            if (section := obj.find_section_containing(addr)) is not None:
+                distance_ = section.vaddr + section.memsize - real_addr
+                distance = min(distance_, VEX_IRSB_MAX_SIZE)
+            elif (segment := obj.find_segment_containing(addr)) is not None:
+                distance_segment = segment.vaddr + segment.memsize - real_addr
+                distance = min(distance_segment, VEX_IRSB_MAX_SIZE)
+
+        # also check the distance between `addr` and the closest function.
+        # we don't want to have a basic block that spans across function boundaries
+        next_func = self.functions.ceiling_func(addr + 1)
+        if next_func is not None:
+            distance_to_func = (
+                next_func.addr & (~1) if is_arm_arch(self.project.arch) else next_func.addr
+            ) - real_addr
+            if distance_to_func != 0:
+                distance = distance_to_func if distance is None else min(distance, distance_to_func)
+
+        # in the end, check the distance between `addr` and the closest occupied region in segment list
+        next_noncode_addr = self._seg_list.next_pos_with_sort_not_in(addr, {"code"}, max_distance=distance)
+        if next_noncode_addr is not None:
+            distance_to_noncode_addr = next_noncode_addr - real_addr
+            distance = min(distance, distance_to_noncode_addr)
+
+        return distance
+
+    def _generate_cfgnodes(self, cfg_job, current_function_addr) -> list[GenerateCFGNodeResult]:
+        addr = cfg_job.addr
+
+        try:
+            if addr in self._nodes:
+                cfg_node = self._nodes[addr]
+                irsb = cfg_node.irsb
+
+                if cfg_node.function_address != current_function_addr:
+                    # the node has been assigned to another function before.
+                    # we should update the function address.
+                    current_function_addr = cfg_node.function_address
+
+                return [GenerateCFGNodeResult(addr, current_function_addr, cfg_node, irsb)]
+
+            is_x86_x64_arch = self.project.arch.name in ("X86", "AMD64")
+
+            real_addr = addr
+
+            # check if the bb should exist, if the segment is executable or if the section is executable
+            obj = self.project.loader.find_object_containing(addr, membership_check=False)
+            if obj:
+                # is there a section?
+                has_executable_section = self._object_has_executable_sections(obj)
+                section = obj.find_section_containing(addr)
+                # If section is None, is there a segment?
+                segment = None
+                if section is None:
+                    has_executable_segment = self._object_has_executable_segments(obj)
+                    segment = obj.find_segment_containing(addr)
+                if (
+                    (has_executable_section and section is None)
+                    and (section is None and has_executable_segment and segment is None)
+                    and self._skip_unmapped_addrs
+                ):
+                    # the basic block should not exist here...
+                    return [GenerateCFGNodeResult(None, None, None, None)]
+                if section is not None:
+                    if not section.is_executable:
+                        # the section is not executable...
+                        return [GenerateCFGNodeResult(None, None, None, None)]
+                elif segment is not None:
+                    if not segment.is_executable:
+                        # the segment is not executable...
+                        return [GenerateCFGNodeResult(None, None, None, None)]
+
+            initial_regs = self._get_initial_registers(addr, cfg_job, current_function_addr)
+
+            nodecode = False
+            blocks: list[Block] = []
+            try:
+                blocks = self._lift_multi(
+                    addr,
+                    collect_data_refs=True,
+                    strict_block_end=True,
+                    load_from_ro_regions=True,
+                    initial_regs=initial_regs,
+                    backup_state=self._base_state,
+                    skip_stmts=True,
+                    max_blocks=1000
+                )
+            except SimTranslationError:
+                nodecode = True
+            # exit(1)
+            # sleep(700)
+
+            irsb_string: bytes = b""
+            lifted_block_bytes = lifted_block.bytes if lifted_block.bytes is not None else b""
+            if lifted_block is not None:
+                irsb_string = lifted_block_bytes[: irsb.size] if irsb is not None else lifted_block_bytes
+
+            if nodecode: # we have not any list of blocks because we had a SimTranslationError, which means we could not lift anything, even partially
+
+                distance = self._calculate_block_max_distance(addr, real_addr)
+
+                lifted_block = self._lift(
+                    addr,
+                    size=distance,
+                    collect_data_refs=True,
+                    strict_block_end=True,
+                    load_from_ro_regions=True,
+                    initial_regs=initial_regs,
+                )
+
+                blocks.append(lifted_block)
+
+            for lifted_block in blocks:
+                if nodecode or irsb.size == 0 or irsb.jumpkind == "Ijk_NoDecode":
+
+                    occupied_sort = self._seg_list.occupied_by_sort(real_addr)
+                    if occupied_sort and occupied_sort != "code":
+                        # no wonder we cannot decode it
+                        return None, None, None, None
+
+                    # we still occupy that location since it cannot be decoded anyways
+                    irsb_size = 0 if irsb is None else irsb.size
+
+                    # the default case
+                    valid_ins = False
+                    nodecode_size = 1
+
+                    # special handling for ud, ud1, and ud2 on x86 and x86-64
+                    if self.project.arch.name == "AMD64" and irsb_string[-2:] == b"\x0f\x0b":
+                        # VEX supports ud2 and make it part of the block size, only in AMD64.
+                        valid_ins = True
+                        nodecode_size = 0
+                    elif (
+                        lifted_block is not None
+                        and is_x86_x64_arch
+                        and lifted_block.bytes is not None
+                        and len(lifted_block.bytes) - irsb_size > 2
+                        and lifted_block.bytes[irsb_size : irsb_size + 2]
+                        in {
+                            b"\x0f\xff",  # ud0
+                            b"\x0f\xb9",  # ud1
+                            b"\x0f\x0b",  # ud2
+                        }
+                    ):
+                        # ud0, ud1, and ud2 are actually valid instructions.
+                        valid_ins = True
+                        # VEX does not support ud0 or ud1 or ud2 under AMD64. they are not part of the block size.
+                        nodecode_size = 2
+
+                    if not valid_ins:
+                        l.debug(
+                            "Decoding error occurred at address %#x of function %#x.",
+                            addr + irsb_size,
+                            current_function_addr,
+                        )
+
+                        self._seg_list.occupy(real_addr, irsb_size, "code")
+                        self._seg_list.occupy(real_addr + irsb_size, nodecode_size, "nodecode")
+
+                        if irsb_size == 0:
+                            return None, None, None, None
+
+                    self._seg_list.occupy(real_addr, irsb_size, "code")
+                    if nodecode_size > 0:
+                        self._seg_list.occupy(real_addr + irsb_size, nodecode_size, "nodecode")
+
+                # Occupy the block in segment list
+                if irsb is not None and irsb.size > 0:
+                    self._seg_list.occupy(real_addr, irsb.size, "code")
+
+                # Create a CFG node, and add it to the graph
+                cfg_node = CFGNode(
+                    addr,
+                    irsb.size,
+                    self.model,
+                    function_address=current_function_addr,
+                    block_id=addr,
+                    irsb=irsb,
+                    thumb=is_thumb,
+                    byte_string=irsb_string,
+                )
+                if self._cfb is not None:
+                    self._cfb.add_obj(real_addr, lifted_block)
+
+                self._model.add_node(addr, cfg_node)
+
+            return addr, current_function_addr, cfg_node, irsb
+
+        except (SimMemoryError, SimEngineError):
+            return None, None, None, None
 
     def _process_block_arch_specific(
         self, addr: int, cfg_node: CFGNode, irsb: pyvex.IRSB, func_addr: int, caller_gp: int | None = None

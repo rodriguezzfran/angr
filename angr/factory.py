@@ -485,6 +485,8 @@ class AngrObjectFactory:
             block = Block(irsb.addr,
                           project=self.project,
                           arch=self.project.arch,
+                          skip_stmts=skip_stmts,
+                          size=irsb.size,
                           irsb=irsb)
             blocks.append(block)
 
