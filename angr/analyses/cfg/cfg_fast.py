@@ -4499,6 +4499,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     # we should update the function address.
                     current_function_addr = cfg_node.function_address
 
+                return GenerateCFGNodeResult(addr, current_function_addr, cfg_node, irsb)
                 return addr, current_function_addr, cfg_node, irsb
 
             is_x86_x64_arch = self.project.arch.name in ("X86", "AMD64")
@@ -4913,6 +4914,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
         return distance
 
+    def _handle_nodecode_block():
+        pass
+
     def _generate_cfgnodes(self, cfg_job, current_function_addr) -> list[GenerateCFGNodeResult]:
         addr = cfg_job.addr
 
@@ -4926,7 +4930,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     # we should update the function address.
                     current_function_addr = cfg_node.function_address
 
-                return [GenerateCFGNodeResult(addr, current_function_addr, cfg_node, irsb)]
+                return [(addr, current_function_addr, cfg_node, irsb)]
 
             is_x86_x64_arch = self.project.arch.name in ("X86", "AMD64")
 
@@ -4949,15 +4953,15 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     and self._skip_unmapped_addrs
                 ):
                     # the basic block should not exist here...
-                    return [GenerateCFGNodeResult(None, None, None, None)]
+                    return [(None, None, None, None)]
                 if section is not None:
                     if not section.is_executable:
                         # the section is not executable...
-                        return [GenerateCFGNodeResult(None, None, None, None)]
+                        return [(None, None, None, None)]
                 elif segment is not None:
                     if not segment.is_executable:
                         # the segment is not executable...
-                        return [GenerateCFGNodeResult(None, None, None, None)]
+                        return [(None, None, None, None)]
 
             initial_regs = self._get_initial_registers(addr, cfg_job, current_function_addr)
 
@@ -4979,16 +4983,13 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
             # exit(1)
             # sleep(700)
 
-            irsb_string: bytes = b""
-            lifted_block_bytes = lifted_block.bytes if lifted_block.bytes is not None else b""
-            if lifted_block is not None:
-                irsb_string = lifted_block_bytes[: irsb.size] if irsb is not None else lifted_block_bytes
+
 
             if nodecode: # we have not any list of blocks because we had a SimTranslationError, which means we could not lift anything, even partially
 
                 distance = self._calculate_block_max_distance(addr, real_addr)
 
-                lifted_block = self._lift(
+                lifted_block_ = self._lift(
                     addr,
                     size=distance,
                     collect_data_refs=True,
@@ -4997,15 +4998,25 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     initial_regs=initial_regs,
                 )
 
-                blocks.append(lifted_block)
+                blocks.append(lifted_block_)
+
+            results : list[GenerateCFGNodeResult] = []
 
             for lifted_block in blocks:
+
+                irsb = lifted_block.get_irsb(skip_stmts=True, relift_if_not_present=False)
+
+                irsb_string: bytes = b""
+                lifted_block_bytes = lifted_block.bytes if lifted_block.bytes is not None else b""
+                if lifted_block is not None:
+                    irsb_string = lifted_block_bytes[: irsb.size] if irsb is not None else lifted_block_bytes
+
                 if nodecode or irsb.size == 0 or irsb.jumpkind == "Ijk_NoDecode":
 
                     occupied_sort = self._seg_list.occupied_by_sort(real_addr)
                     if occupied_sort and occupied_sort != "code":
                         # no wonder we cannot decode it
-                        return None, None, None, None
+                        return [(None, None, None, None)]
 
                     # we still occupy that location since it cannot be decoded anyways
                     irsb_size = 0 if irsb is None else irsb.size
@@ -5013,6 +5024,21 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     # the default case
                     valid_ins = False
                     nodecode_size = 1
+
+                    # Since with the multi_blocks approach, we first lift the IRSBs and then we instantiate the Blocks,
+                    # we load the block's bytes with the IRSB size, but for the below checks, we need the bytes loaded
+                    # using distance.
+                    # So we create a new instance of Block (we are not lifting a new IRSB)
+                    distance = self._calculate_block_max_distance(lifted_block.addr, lifted_block.addr)
+
+                    lifted_block_ = self._lift(
+                        addr,
+                        size=distance,
+                        collect_data_refs=True,
+                        strict_block_end=True,
+                        load_from_ro_regions=True,
+                        initial_regs=initial_regs,
+                    )
 
                     # special handling for ud, ud1, and ud2 on x86 and x86-64
                     if self.project.arch.name == "AMD64" and irsb_string[-2:] == b"\x0f\x0b":
@@ -5047,7 +5073,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                         self._seg_list.occupy(real_addr + irsb_size, nodecode_size, "nodecode")
 
                         if irsb_size == 0:
-                            return None, None, None, None
+                            return [(None, None, None, None)]
 
                     self._seg_list.occupy(real_addr, irsb_size, "code")
                     if nodecode_size > 0:
@@ -5065,7 +5091,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     function_address=current_function_addr,
                     block_id=addr,
                     irsb=irsb,
-                    thumb=is_thumb,
                     byte_string=irsb_string,
                 )
                 if self._cfb is not None:
@@ -5073,10 +5098,12 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
                 self._model.add_node(addr, cfg_node)
 
-            return addr, current_function_addr, cfg_node, irsb
+                results.append((addr, current_function_addr, cfg_node, irsb))
+
+            return results
 
         except (SimMemoryError, SimEngineError):
-            return None, None, None, None
+            return [(None, None, None, None)]
 
     def _process_block_arch_specific(
         self, addr: int, cfg_node: CFGNode, irsb: pyvex.IRSB, func_addr: int, caller_gp: int | None = None
@@ -5590,8 +5617,11 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
             for i, block in enumerate(blocks_list):
                 print(f"Block {i}:")
                 block.pp()
+
+            return blocks_list
         except Exception as e:
             print(f"Error lifting multiple blocks: {e}")
+            return []
 
     def _lift(self, addr, *args, opt_level=1, cross_insn_opt=False, **kwargs):  # pylint:disable=arguments-differ
         kwargs["extra_stop_points"] = set(self._known_thunks)
