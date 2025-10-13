@@ -9,7 +9,6 @@ import re
 import string
 from collections import defaultdict, OrderedDict
 from enum import Enum, unique
-from dataclasses import dataclass
 
 import networkx
 from sortedcontainers import SortedDict
@@ -62,16 +61,6 @@ VEX_IRSB_MAX_SIZE = 400
 
 
 l = logging.getLogger(name=__name__)
-
-@dataclass
-class GenerateCFGNodeResult:
-    """
-    The result of generating a CFG node.
-    """
-    add: int | None
-    current_func_addr: int | None
-    cfg_node: CFGNode | None
-    irsb: pyvex.IRSB | PcodeIRSB | None
 
 
 class ContinueScanningNotification(RuntimeError):
@@ -4499,7 +4488,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     # we should update the function address.
                     current_function_addr = cfg_node.function_address
 
-                return GenerateCFGNodeResult(addr, current_function_addr, cfg_node, irsb)
                 return addr, current_function_addr, cfg_node, irsb
 
             is_x86_x64_arch = self.project.arch.name in ("X86", "AMD64")
@@ -4917,7 +4905,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
     def _handle_nodecode_block():
         pass
 
-    def _generate_cfgnodes(self, cfg_job, current_function_addr) -> list[GenerateCFGNodeResult]:
+    def _generate_cfgnodes(self, cfg_job, current_function_addr) -> list[tuple]:
         addr = cfg_job.addr
 
         try:
@@ -5000,7 +4988,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
                 blocks.append(lifted_block_)
 
-            results : list[GenerateCFGNodeResult] = []
+            results : list[tuple] = []
 
             for lifted_block in blocks:
 
@@ -5031,7 +5019,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     # So we create a new instance of Block (we are not lifting a new IRSB)
                     distance = self._calculate_block_max_distance(lifted_block.addr, lifted_block.addr)
 
-                    lifted_block_ = self._lift(
+                    lifted_block = self._lift(
                         addr,
                         size=distance,
                         collect_data_refs=True,

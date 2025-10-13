@@ -360,6 +360,18 @@ class Block(Serializable):
 
         return vex
 
+    def get_irsb(self, skip_stmts: bool, relift_if_not_present: bool = False) -> IRSB | PcodeIRSB:
+        if skip_stmts:
+            if not self._vex_nostmt and relift_if_not_present:
+                self._vex_nostmt = self._lift_nocache(True)
+                self._parse_vex_info(self._vex_nostmt)
+            return self._vex_nostmt
+        else:
+            if not self._vex and relift_if_not_present:
+                self._vex = self._lift_nocache(False)
+                self._parse_vex_info(self._vex)
+            return self._vex
+
     @property
     def vex(self) -> IRSB | PcodeIRSB:
         if not self._vex:
