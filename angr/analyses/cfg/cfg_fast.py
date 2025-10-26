@@ -2345,6 +2345,149 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
         return entries
 
     def _scan_irsb(self, cfg_job, current_func_addr) -> list[CFGJob]:
+        if not is_arm_arch(self.project.arch) and cfg_job.job_type == CFGJobType.NORMAL:
+            # try scanning multiple IRSBs at once
+            return self._scan_multiple_irsbs(cfg_job, current_func_addr)
+        else:
+            return self._scan_single_irsb(cfg_job, current_func_addr)
+        #return self._scan_single_irsb(cfg_job, current_func_addr)
+
+    def _scan_multiple_irsbs(self, cfg_job, current_func_addr) -> list[CFGJob]:
+
+        block_results = self._generate_cfgnodes(cfg_job, current_func_addr)
+        if not block_results:
+            return []
+
+        addr, function_addr, cfg_node, irsb = block_results[0]
+
+        # function_addr and current_function_addr can be different. e.g. when tracing an optimized tail-call that jumps
+        # into another function that has been identified before.
+
+        if cfg_node is None:
+            # exceptions occurred, or we cannot get a CFGNode for other reasons
+            return []
+
+        # Add edges going to this node in function graphs
+        cfg_job.apply_function_edges(self, clear=True)
+
+        self._graph_add_edge(cfg_node, cfg_job.src_node, cfg_job.jumpkind, cfg_job.src_ins_addr, cfg_job.src_stmt_idx)
+        self._function_add_node(cfg_node, function_addr)
+
+        if self.functions.get_by_addr(function_addr).returning is not True:
+            self._updated_nonreturning_functions.add(function_addr)
+
+        # the function address is updated by _generate_cfgnode() because the CFG node has been assigned to a
+        # different function (`function_addr`) before. this can happen when the beginning block of a function is
+        # first reached through a direct jump (as the result of tail-call optimization) and then reached through a
+        # call.
+        # this is very likely to be fixed during the second phase of CFG traversal, so we can just let it be.
+        # however, extra call edges pointing to the expected function address (`current_func_addr`) will lead to
+        # the creation of an empty function in function manager, and because the function is empty, we cannot
+        # determine if the function will return or not!
+        # assuming tail-call optimization is what is causing this situation, and if the original function has been
+        # determined to be returning, we update the newly created function's returning status here.
+        # this is still a hack. the complete solution is to record this situation and account for it when CFGBase
+        # analyzes the returning status of each function. we will cross that bridge when we encounter such cases.
+        if (
+            current_func_addr != function_addr
+            and self.kb.functions[function_addr].returning is not None
+            and self.kb.functions.contains_addr(current_func_addr)
+        ):
+            self.kb.functions[current_func_addr].returning = self.kb.functions[function_addr].returning
+            if self.kb.functions[current_func_addr].returning:
+                self._pending_jobs.add_returning_function(current_func_addr)
+
+        # If we have traced it before, don't trace it anymore
+        if addr in self._traced_addresses:
+            # the address has been traced before
+            return []
+        # Mark the address as traced
+        self._traced_addresses.add(addr)
+
+        # irsb cannot be None here, but we add a check for resilience
+        if irsb is None:
+            return []
+
+        # IRSB is only used once per CFGNode. We should be able to clean up the CFGNode here in order to save memory
+        cfg_node.irsb = None
+
+        caller_gp = None
+        if self.project.arch.name in {"MIPS32", "MIPS64"}:
+            # the caller might have gp passed on
+            caller_gp = cfg_job.gp
+        self._process_block_arch_specific(addr, cfg_node, irsb, function_addr, caller_gp=caller_gp)
+
+        # Scan the basic block to collect data references
+        if self._collect_data_ref:
+            self._collect_data_references(irsb, addr)
+
+        # Get all possible successors
+        irsb_next, jumpkind = irsb.next, irsb.jumpkind
+        successors = []
+
+        if irsb.statements:
+            last_ins_addr = None
+            ins_addr = addr
+            for i, stmt in enumerate(irsb.statements):
+                if isinstance(stmt, pyvex.IRStmt.Exit):
+                    branch_ins_addr = last_ins_addr if self.project.arch.branch_delay_slot else ins_addr
+                    if self._is_branch_vex_artifact_only(irsb, branch_ins_addr, stmt):
+                        continue
+                    successors.append((i, branch_ins_addr, stmt.dst, stmt.jumpkind))
+                elif isinstance(stmt, pyvex.IRStmt.IMark):
+                    last_ins_addr = ins_addr
+                    ins_addr = stmt.addr + stmt.delta
+        else:
+            for ins_addr, stmt_idx, exit_stmt in irsb.exit_statements:
+                branch_ins_addr = ins_addr
+                if (
+                    self.project.arch.branch_delay_slot
+                    and irsb.instruction_addresses
+                    and ins_addr in irsb.instruction_addresses
+                ):
+                    idx_ = irsb.instruction_addresses.index(ins_addr)
+                    if idx_ > 0:
+                        branch_ins_addr = irsb.instruction_addresses[idx_ - 1]
+                elif self._is_branch_vex_artifact_only(irsb, branch_ins_addr, exit_stmt):
+                    continue
+                successors.append((stmt_idx, branch_ins_addr, exit_stmt.dst, exit_stmt.jumpkind))
+
+        # default statement
+        default_branch_ins_addr = None
+        if irsb.instruction_addresses:
+            if self.project.arch.branch_delay_slot:
+                if len(irsb.instruction_addresses) > 1:
+                    default_branch_ins_addr = irsb.instruction_addresses[-2]
+            else:
+                default_branch_ins_addr = irsb.instruction_addresses[-1]
+
+        successors.append((DEFAULT_STATEMENT, default_branch_ins_addr, irsb_next, jumpkind))
+
+        # exception handling
+        exc = self._exception_handling_by_endaddr.get(addr + irsb.size, None)
+        if exc is not None:
+            successors.append((DEFAULT_STATEMENT, default_branch_ins_addr, exc.handler_addr, "Ijk_Exception"))
+
+        entries = []
+
+        # successors = self._post_process_successors(irsb, successors)
+
+        # Process each successor
+        for suc in successors:
+            stmt_idx, ins_addr, target, jumpkind = suc
+
+            new_jobs = self._create_jobs(target, jumpkind, function_addr, irsb, addr, cfg_node, ins_addr, stmt_idx)
+            entries += new_jobs
+
+        for _, _, cfg_node, _ in block_results:
+            for job in entries:
+                if job.addr == cfg_node.addr:
+                    print(f"Node with addr {cfg_node.addr:x} and funct_addr {cfg_node.function_address:x} updated to funct_addr {job.func_addr:x}")
+                    cfg_node.function_address = job.func_addr
+
+        return entries
+
+    def _scan_single_irsb(self, cfg_job, current_func_addr) -> list[CFGJob]:
         """
         Generate a list of successors (generating them each as entries) to IRSB.
         Updates previous CFG nodes with edges.
@@ -2481,6 +2624,179 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     if job.jumpkind in {"Ijk_Boring", "Ijk_FakeRet"}:
                         self._decoding_assumption_relations.add_edge(real_addr, job.addr & 0xFFFF_FFFE)
 
+        return entries
+
+    def _scan_multiple_irsbs__(self, cfg_job, current_func_addr) -> list[CFGJob]:
+        """
+        Generate a list of successors (generating them each as entries) to IRSB.
+        Updates previous CFG nodes with edges.
+
+        :param CFGJob cfg_job: The CFGJob instance.
+        :param int current_func_addr: Address of the current function
+        :return: a list of successors
+        :rtype: list
+        """
+
+        block_results = self._generate_cfgnodes(cfg_job, current_func_addr)
+        if not block_results:
+            return []
+
+        first_addr, first_function_addr, first_cfg_node, first_irsb = block_results[0]
+        if first_cfg_node is None:
+            # exceptions occurred, or we cannot get a CFGNode for other reasons
+            return []
+        #addr, function_addr, cfg_node, irsb = self._generate_cfgnode(cfg_job, current_func_addr)
+
+        # function_addr and current_function_addr can be different. e.g. when tracing an optimized tail-call that jumps
+        # into another function that has been identified before.
+
+        # Add edges going to this node in function graphs
+        cfg_job.apply_function_edges(self, clear=True)
+
+        self._graph_add_edge(first_cfg_node, cfg_job.src_node, cfg_job.jumpkind, cfg_job.src_ins_addr, cfg_job.src_stmt_idx)
+        self._function_add_node(first_cfg_node, first_function_addr)
+
+        if self.functions.get_by_addr(first_function_addr).returning is not True:
+            self._updated_nonreturning_functions.add(first_function_addr)
+
+        # the function address is updated by _generate_cfgnode() because the CFG node has been assigned to a
+        # different function (`function_addr`) before. this can happen when the beginning block of a function is
+        # first reached through a direct jump (as the result of tail-call optimization) and then reached through a
+        # call.
+        # this is very likely to be fixed during the second phase of CFG traversal, so we can just let it be.
+        # however, extra call edges pointing to the expected function address (`current_func_addr`) will lead to
+        # the creation of an empty function in function manager, and because the function is empty, we cannot
+        # determine if the function will return or not!
+        # assuming tail-call optimization is what is causing this situation, and if the original function has been
+        # determined to be returning, we update the newly created function's returning status here.
+        # this is still a hack. the complete solution is to record this situation and account for it when CFGBase
+        # analyzes the returning status of each function. we will cross that bridge when we encounter such cases.
+        if (
+            current_func_addr != first_function_addr
+            and self.kb.functions[first_function_addr].returning is not None
+            and self.kb.functions.contains_addr(current_func_addr)
+        ):
+            self.kb.functions[current_func_addr].returning = self.kb.functions[first_function_addr].returning
+            if self.kb.functions[current_func_addr].returning:
+                self._pending_jobs.add_returning_function(current_func_addr)
+
+        # If we have traced it before, don't trace it anymore
+
+        if first_addr in self._traced_addresses:
+            # the address has been traced before
+            return []
+        # Mark the address as traced
+        self._traced_addresses.add(first_addr)
+
+        # irsb cannot be None here, but we add a check for resilience
+        if first_irsb is None:
+            return []
+
+        # IRSB is only used once per CFGNode. We should be able to clean up the CFGNode here in order to save memory
+        first_cfg_node.irsb = None
+
+        caller_gp = None
+        if self.project.arch.name in {"MIPS32", "MIPS64"}:
+            # the caller might have gp passed on
+            caller_gp = cfg_job.gp
+        self._process_block_arch_specific(first_addr, first_cfg_node, first_irsb, first_function_addr, caller_gp=caller_gp)
+
+        # Scan the basic block to collect data references
+        if self._collect_data_ref:
+            self._collect_data_references(first_irsb, first_addr)
+
+        for addr, function_addr, cfg_node, irsb in block_results:
+            # Get all possible successors
+            irsb_next, jumpkind = irsb.next, irsb.jumpkind
+            successors = []
+
+            if irsb.statements:
+                last_ins_addr = None
+                ins_addr = addr
+                for i, stmt in enumerate(irsb.statements):
+                    if isinstance(stmt, pyvex.IRStmt.Exit):
+                        branch_ins_addr = last_ins_addr if self.project.arch.branch_delay_slot else ins_addr
+                        if self._is_branch_vex_artifact_only(irsb, branch_ins_addr, stmt):
+                            continue
+                        successors.append((i, branch_ins_addr, stmt.dst, stmt.jumpkind))
+                    elif isinstance(stmt, pyvex.IRStmt.IMark):
+                        last_ins_addr = ins_addr
+                        ins_addr = stmt.addr + stmt.delta
+            else:
+                for ins_addr, stmt_idx, exit_stmt in irsb.exit_statements:
+                    branch_ins_addr = ins_addr
+                    if (
+                        self.project.arch.branch_delay_slot
+                        and irsb.instruction_addresses
+                        and ins_addr in irsb.instruction_addresses
+                    ):
+                        idx_ = irsb.instruction_addresses.index(ins_addr)
+                        if idx_ > 0:
+                            branch_ins_addr = irsb.instruction_addresses[idx_ - 1]
+                    elif self._is_branch_vex_artifact_only(irsb, branch_ins_addr, exit_stmt):
+                        continue
+                    successors.append((stmt_idx, branch_ins_addr, exit_stmt.dst, exit_stmt.jumpkind))
+
+            # default statement
+            default_branch_ins_addr = None
+            if irsb.instruction_addresses:
+                if self.project.arch.branch_delay_slot:
+                    if len(irsb.instruction_addresses) > 1:
+                        default_branch_ins_addr = irsb.instruction_addresses[-2]
+                else:
+                    default_branch_ins_addr = irsb.instruction_addresses[-1]
+
+            successors.append((DEFAULT_STATEMENT, default_branch_ins_addr, irsb_next, jumpkind))
+
+            # exception handling
+            exc = self._exception_handling_by_endaddr.get(addr + irsb.size, None)
+            if exc is not None:
+                successors.append((DEFAULT_STATEMENT, default_branch_ins_addr, exc.handler_addr, "Ijk_Exception"))
+
+            entries = []
+
+            #  I think this is not needed because is logic for ARM arch
+            # successors = self._post_process_successors(irsb, successors)
+
+            # Process each successor
+            for suc in successors:
+                stmt_idx, ins_addr, target, jumpkind = suc
+
+                target_addr: int | None
+                if type(target) is pyvex.IRExpr.Const:  # pylint: disable=unidiomatic-typecheck
+                    target_addr = target.con.value
+                elif type(target) in (
+                    pyvex.IRConst.U8,
+                    pyvex.IRConst.U16,
+                    pyvex.IRConst.U32,
+                    pyvex.IRConst.U64,
+                ):  # pylint: disable=unidiomatic-typecheck
+                    target_addr = target.value
+                elif type(target) is int:  # pylint: disable=unidiomatic-typecheck
+                    target_addr = target
+                else:
+                    target_addr = None
+
+
+                # Check if target already exists in the jobs queue, to avoid duplications
+                # Verificar si ya existe un job con esta dirección
+                job_exists = False
+                if target_addr is not None:
+                    for existing_job in self._job_info_queue:
+                        if existing_job.job.addr == target_addr:
+                            job_exists = True
+                            break
+                if not job_exists:
+                    new_jobs = self._create_jobs(target, jumpkind, function_addr, irsb, addr, cfg_node, ins_addr, stmt_idx)
+                    entries += new_jobs
+
+            for _, _, cfg_node, _ in block_results:
+                for job in self._job_info_queue:
+                    if job.job.addr == cfg_node.addr:
+                        cfg_node.function_address = job.job.func_addr
+
+        for job in entries:
+            print(f"JOB ADDR: {job.addr:#x}")
         return entries
 
     def _create_jobs(
@@ -4918,6 +5234,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     # we should update the function address.
                     current_function_addr = cfg_node.function_address
 
+                print("Node already exists!")
                 return [(addr, current_function_addr, cfg_node, irsb)]
 
             is_x86_x64_arch = self.project.arch.name in ("X86", "AMD64")
