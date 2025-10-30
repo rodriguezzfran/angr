@@ -1740,7 +1740,7 @@ class Clinic(Analysis):
             func_graph=ail_graph,
             func_args=func_args,
             fail_fast=self._fail_fast,
-            # use_callee_saved_regs_at_return=not self._register_save_areas_removed,  FIXME
+            use_callee_saved_regs_at_return=not self._register_save_areas_removed,
         )
 
         class TempClass:  # pylint:disable=missing-class-docstring
@@ -2008,9 +2008,7 @@ class Clinic(Analysis):
 
                 # link struct member info
                 if isinstance(stmt.variable, SimStackVariable):
-                    off = stmt.variable.offset
-                    if off in variable_manager.stack_offset_to_struct_member_info:
-                        stmt.tags["struct_member_info"] = variable_manager.stack_offset_to_struct_member_info[off]
+                    self._map_stackvar_to_struct_member(variable_manager, stmt, stmt.variable.offset)
 
             elif stmt_type is ailment.Stmt.Assignment or stmt_type is ailment.Stmt.WeakAssignment:
                 self._link_variables_on_expr(variable_manager, global_variables, block, stmt_idx, stmt, stmt.dst)
@@ -2094,9 +2092,7 @@ class Clinic(Analysis):
                 expr.variable_offset = offset
 
                 if isinstance(expr, ailment.Expr.VirtualVariable) and expr.was_stack:
-                    off = expr.stack_offset
-                    if off in variable_manager.stack_offset_to_struct_member_info:
-                        expr.tags["struct_member_info"] = variable_manager.stack_offset_to_struct_member_info[off]
+                    self._map_stackvar_to_struct_member(variable_manager, expr, expr.stack_offset)
 
         elif type(expr) is ailment.Expr.Load:
             variables = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr, block_idx=block.idx)
@@ -2133,9 +2129,7 @@ class Clinic(Analysis):
                 expr.variable_offset = offset
 
                 if isinstance(var, SimStackVariable):
-                    off = var.offset
-                    if off in variable_manager.stack_offset_to_struct_member_info:
-                        expr.tags["struct_member_info"] = variable_manager.stack_offset_to_struct_member_info[off]
+                    self._map_stackvar_to_struct_member(variable_manager, expr, var.offset)
 
         elif type(expr) is ailment.Expr.BinaryOp:
             variables = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr, block_idx=block.idx)
@@ -2226,6 +2220,24 @@ class Clinic(Analysis):
             for _, vvar in expr.src_and_vvars:
                 if vvar is not None:
                     self._link_variables_on_expr(variable_manager, global_variables, block, stmt_idx, stmt, vvar)
+
+    def _map_stackvar_to_struct_member(
+        self,
+        variable_manager,
+        expr_or_stmt: ailment.expression.Expression | ailment.statement.Statement,
+        the_stack_offset: int,
+    ) -> bool:
+        any_struct_found = False
+        off = the_stack_offset
+        for stack_off in variable_manager.stack_offset_to_struct.irange(maximum=off, reverse=True):
+            the_var, vartype = variable_manager.stack_offset_to_struct[stack_off]
+            if stack_off <= off < stack_off + vartype.size // self.project.arch.byte_width:
+                expr_or_stmt.tags["struct_member_info"] = off - stack_off, the_var, vartype
+                any_struct_found = True
+                break
+            if stack_off + vartype.size // self.project.arch.byte_width <= off:
+                break
+        return any_struct_found
 
     def _function_graph_to_ail_graph(self, func_graph, blocks_by_addr_and_size=None):
         if blocks_by_addr_and_size is None:
@@ -2545,6 +2557,11 @@ class Clinic(Analysis):
             intended_head = preds[0]
             other_heads = preds[1:]
 
+            # I've seen cases where there is one more block between the actual intended head and the candidate.
+            # binary 7995a0325b446c462bdb6ae10b692eee2ecadd8e888e9d7729befe4412007afb, block 0x140032760
+            while ail_graph.out_degree[intended_head] == 1 and ail_graph.in_degree[intended_head] == 1:
+                intended_head = next(iter(ail_graph.predecessors(intended_head)))
+
             # now here is the tricky part. there are two cases:
             # Case 1: the intended head and the other heads share the same suffix (of instructions)
             #    Example:
@@ -2649,8 +2666,6 @@ class Clinic(Analysis):
     def _get_overlapping_suffix_instructions_compare_conditional_jumps(
         ailblock_0: ailment.Block, ailblock_1: ailment.Block
     ) -> bool:
-        # TODO: The logic here is naive and highly customized to the only example I can access. Expand this method
-        #  later to handle more cases if needed.
         if len(ailblock_0.statements) == 0 or len(ailblock_1.statements) == 0:
             return False
 
@@ -2663,7 +2678,10 @@ class Clinic(Analysis):
 
         last_stmt_0 = ailblock_0.statements[-1]
         last_stmt_1 = ailblock_1.statements[-1]
-        if not (isinstance(last_stmt_0, ailment.Stmt.ConditionalJump) and last_stmt_0.likes(last_stmt_1)):
+        if not (
+            isinstance(last_stmt_0, ailment.Stmt.ConditionalJump)
+            and isinstance(last_stmt_1, ailment.Stmt.ConditionalJump)
+        ):
             return False
 
         last_cmp_stmt_0 = next(
