@@ -1730,7 +1730,9 @@ VEXLiftResult* State::lift_block(address_t block_address, int32_t block_size) {
 	    0 /* collect_data_refs */,
 	    0 /* load_from_ro_regions */,
 	    0 /* const_prop */,
-	    pxControl, 0);
+	    pxControl,
+        0, /* lookback */
+        1); /* clearVEXAllocArray */
 }
 
 void State::mark_register_symbolic(vex_reg_offset_t reg_offset, int64_t reg_size) {
