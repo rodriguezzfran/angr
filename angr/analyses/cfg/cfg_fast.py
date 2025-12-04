@@ -2347,12 +2347,12 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
         return entries
 
     def _scan_irsb(self, cfg_job, current_func_addr) -> list[CFGJob]:
-        if not is_arm_arch(self.project.arch) and cfg_job.job_type == CFGJobType.NORMAL:
-            # try scanning multiple IRSBs at once
-            return self._scan_multiple_irsbs(cfg_job, current_func_addr)
-        else:
-            return self._scan_single_irsb(cfg_job, current_func_addr)
-        # return self._scan_single_irsb(cfg_job, current_func_addr)
+        # if not is_arm_arch(self.project.arch) and cfg_job.job_type == CFGJobType.NORMAL:
+        #     # try scanning multiple IRSBs at once
+        #     return self._scan_multiple_irsbs(cfg_job, current_func_addr)
+        # else:
+        #     return self._scan_single_irsb(cfg_job, current_func_addr)
+        return self._scan_single_irsb(cfg_job, current_func_addr)
 
     def _scan_multiple_irsbs(self, cfg_job, current_func_addr) -> list[CFGJob]:
 
@@ -4776,6 +4776,18 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
             irsb: pyvex.IRSB | PcodeIRSB | None = None
             lifted_block: Block = None  # type:ignore
             try:
+                # fill in the cache
+                self._lift_multi(
+                    addr,
+                    collect_data_refs=True,
+                    strict_block_end=True,
+                    load_from_ro_regions=True,
+                    initial_regs=initial_regs,
+                    backup_state=self._base_state,
+                    skip_stmts=True,
+                    max_blocks=1000,
+                )
+
                 lifted_block = self._lift(
                     addr,
                     size=distance,
