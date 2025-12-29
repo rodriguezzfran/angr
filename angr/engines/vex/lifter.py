@@ -171,7 +171,6 @@ class VEXLifter(SimEngine):
         # FIXME: cache ignores provided state
         use_cache = self._use_cache and not (skip_stmts or collect_data_refs
                                              or have_patches or const_prop)
-        use_cache = self._use_cache
 
         # phase 3: check cache
         cache_key = None
@@ -179,14 +178,12 @@ class VEXLifter(SimEngine):
             cache_key = (config.addr, insn_bytes, config.size, config.num_inst,
                          config.thumb, config.opt_level,
                          config.strict_block_end, config.cross_insn_opt)
-            if skip_stmts:
-                cache_key = config.addr, "NOSTMT"
             if cache_key in self._block_cache:
                 self._block_cache_hits += 1
                 l.debug("Cache hit IRSB of %s at %#x", config.arch,
                         config.addr)
                 irsb = self._block_cache[cache_key]
-                stop_point = self._first_stoppoint(irsb, extra_stop_points) if not skip_stmts else None
+                stop_point = self._first_stoppoint(irsb, extra_stop_points)
                 if stop_point is None:
                     return irsb
                 config.size = stop_point - config.addr
@@ -325,12 +322,6 @@ class VEXLifter(SimEngine):
         :param max_blocks:      The maximum number of blocks to lift. If None, will use default value set on pyvex.
         :return:                A list of lifted IRSBs.
         """
-
-        cache_key = addr, "NOSTMT"
-        if cache_key in self._block_cache:
-            print("SKIP multi-block lift from cache at %#x", addr)
-            return []
-
         addr, arch = self._validate_lift_parameters(state=state, clemory=clemory,
                                                     addr=addr, arch=arch)
         config = self._setup_lift_defaults(addr=addr, arch=arch, state=state, size =VEX_SRC_DATA_MAX_SIZE,
@@ -365,12 +356,6 @@ class VEXLifter(SimEngine):
                 const_prop=config.const_prop,
                 cross_insn_opt=config.cross_insn_opt,
             )
-
-            # drop everything to the cache
-            for irsb in irsb_list:
-                cache_key = irsb.addr, "NOSTMT"
-                self._block_cache[cache_key] = irsb
-
             return irsb_list
         except pyvex.PyVEXError as e:
             print("VEX multi-block translation error at %#x", config.addr)
