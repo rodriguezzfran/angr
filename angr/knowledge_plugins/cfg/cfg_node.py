@@ -119,9 +119,11 @@ class CFGNode(Serializable):
 
         if not instruction_addrs and not self.is_simprocedure and irsb is not None:
             # We have to collect instruction addresses by ourselves
-            self.instruction_addrs = irsb.instruction_addresses
+            self.instruction_addrs = list(irsb.instruction_addresses)
 
-        self.irsb = None
+
+
+        self.irsb = irsb
         self.soot_block = soot_block
         self.has_return = False
         self._hash = None

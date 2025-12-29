@@ -9,6 +9,8 @@ import re
 import string
 from collections import defaultdict, OrderedDict
 from enum import Enum, unique
+from cachetools import FIFOCache, LRUCache, LFUCache
+from typing import cast, Final
 
 import networkx
 from sortedcontainers import SortedDict
@@ -869,6 +871,15 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
         self._job_ctr = 0
         self._decoding_assumptions: dict[int, DecodingAssumption] = {}
         self._decoding_assumption_relations = None
+
+
+        # A cache for storing previously decoded blocks
+        # This way we can decode many blocks at once with multi block lifting, and
+        # then for each block reuse the decoded IRSB without having to lift it again.
+        BLOCKS_CACHE_MAX_SIZE: Final[int] = 150000
+        self._blocks_cache = LRUCache(maxsize=BLOCKS_CACHE_MAX_SIZE)
+        self.cache_misses_counter = 0
+        self.cache_hits_counter = 0
 
         # A mapping between address and the actual data in memory
         # self._memory_data = { }
@@ -2347,158 +2358,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
         return entries
 
     def _scan_irsb(self, cfg_job, current_func_addr) -> list[CFGJob]:
-        # if not is_arm_arch(self.project.arch) and cfg_job.job_type == CFGJobType.NORMAL:
-        #     # try scanning multiple IRSBs at once
-        #     return self._scan_multiple_irsbs(cfg_job, current_func_addr)
-        # else:
-        #     return self._scan_single_irsb(cfg_job, current_func_addr)
-        return self._scan_single_irsb(cfg_job, current_func_addr)
-
-    def _scan_multiple_irsbs(self, cfg_job, current_func_addr) -> list[CFGJob]:
-
-        print("USING SCAN_IRSB MULTIPLE")
-
-        block_results = self._generate_cfgnodes(cfg_job, current_func_addr)
-        if not block_results:
-            return []
-
-        addr, function_addr, cfg_node, irsb = block_results[0]
-
-        # function_addr and current_function_addr can be different. e.g. when tracing an optimized tail-call that jumps
-        # into another function that has been identified before.
-
-        if cfg_node is None:
-            # exceptions occurred, or we cannot get a CFGNode for other reasons
-            return []
-
-        # Add edges going to this node in function graphs
-        cfg_job.apply_function_edges(self, clear=True)
-
-        self._graph_add_edge(cfg_node, cfg_job.src_node, cfg_job.jumpkind, cfg_job.src_ins_addr, cfg_job.src_stmt_idx)
-        self._function_add_node(cfg_node, function_addr)
-
-        if self.functions.get_by_addr(function_addr).returning is not True:
-            self._updated_nonreturning_functions.add(function_addr)
-
-        # the function address is updated by _generate_cfgnode() because the CFG node has been assigned to a
-        # different function (`function_addr`) before. this can happen when the beginning block of a function is
-        # first reached through a direct jump (as the result of tail-call optimization) and then reached through a
-        # call.
-        # this is very likely to be fixed during the second phase of CFG traversal, so we can just let it be.
-        # however, extra call edges pointing to the expected function address (`current_func_addr`) will lead to
-        # the creation of an empty function in function manager, and because the function is empty, we cannot
-        # determine if the function will return or not!
-        # assuming tail-call optimization is what is causing this situation, and if the original function has been
-        # determined to be returning, we update the newly created function's returning status here.
-        # this is still a hack. the complete solution is to record this situation and account for it when CFGBase
-        # analyzes the returning status of each function. we will cross that bridge when we encounter such cases.
-        if (
-            current_func_addr != function_addr
-            and self.kb.functions[function_addr].returning is not None
-            and self.kb.functions.contains_addr(current_func_addr)
-        ):
-            self.kb.functions[current_func_addr].returning = self.kb.functions[function_addr].returning
-            if self.kb.functions[current_func_addr].returning:
-                self._pending_jobs.add_returning_function(current_func_addr)
-
-        # If we have traced it before, don't trace it anymore
-        if addr in self._traced_addresses:
-            # the address has been traced before
-            return []
-        # Mark the address as traced
-        self._traced_addresses.add(addr)
-
-        # irsb cannot be None here, but we add a check for resilience
-        if irsb is None:
-            return []
-
-        # IRSB is only used once per CFGNode. We should be able to clean up the CFGNode here in order to save memory
-        cfg_node.irsb = None
-
-        caller_gp = None
-        if self.project.arch.name in {"MIPS32", "MIPS64"}:
-            # the caller might have gp passed on
-            caller_gp = cfg_job.gp
-        self._process_block_arch_specific(addr, cfg_node, irsb, function_addr, caller_gp=caller_gp)
-
-        # Scan the basic block to collect data references
-        if self._collect_data_ref:
-            self._collect_data_references(irsb, addr)
-
-        # Get all possible successors
-        irsb_next, jumpkind = irsb.next, irsb.jumpkind
-        successors = []
-
-        if irsb.statements:
-            last_ins_addr = None
-            ins_addr = addr
-            for i, stmt in enumerate(irsb.statements):
-                if isinstance(stmt, pyvex.IRStmt.Exit):
-                    branch_ins_addr = last_ins_addr if self.project.arch.branch_delay_slot else ins_addr
-                    if self._is_branch_vex_artifact_only(irsb, branch_ins_addr, stmt):
-                        continue
-                    successors.append((i, branch_ins_addr, stmt.dst, stmt.jumpkind))
-                elif isinstance(stmt, pyvex.IRStmt.IMark):
-                    last_ins_addr = ins_addr
-                    ins_addr = stmt.addr + stmt.delta
-        else:
-            for ins_addr, stmt_idx, exit_stmt in irsb.exit_statements:
-                branch_ins_addr = ins_addr
-                if (
-                    self.project.arch.branch_delay_slot
-                    and irsb.instruction_addresses
-                    and ins_addr in irsb.instruction_addresses
-                ):
-                    idx_ = irsb.instruction_addresses.index(ins_addr)
-                    if idx_ > 0:
-                        branch_ins_addr = irsb.instruction_addresses[idx_ - 1]
-                elif self._is_branch_vex_artifact_only(irsb, branch_ins_addr, exit_stmt):
-                    continue
-                successors.append((stmt_idx, branch_ins_addr, exit_stmt.dst, exit_stmt.jumpkind))
-
-        # default statement
-        default_branch_ins_addr = None
-        if irsb.instruction_addresses:
-            if self.project.arch.branch_delay_slot:
-                if len(irsb.instruction_addresses) > 1:
-                    default_branch_ins_addr = irsb.instruction_addresses[-2]
-            else:
-                default_branch_ins_addr = irsb.instruction_addresses[-1]
-
-        successors.append((DEFAULT_STATEMENT, default_branch_ins_addr, irsb_next, jumpkind))
-
-        # exception handling
-        exc = self._exception_handling_by_endaddr.get(addr + irsb.size, None)
-        if exc is not None:
-            successors.append((DEFAULT_STATEMENT, default_branch_ins_addr, exc.handler_addr, "Ijk_Exception"))
-
-        entries = []
-
-        # successors = self._post_process_successors(irsb, successors)
-
-        # Process each successor
-        for suc in successors:
-            stmt_idx, ins_addr, target, jumpkind = suc
-
-            new_jobs = self._create_jobs(target, jumpkind, function_addr, irsb, addr, cfg_node, ins_addr, stmt_idx)
-            entries += new_jobs
-
-        print("EXITS COMPARISON:")
-        print("For block at addr:", hex(addr), " - Exits:")
-        for entry in entries:
-            print("\t\t", hex(entry.addr), " - ", entry.jumpkind)
-
-        # Update function addresses of all generated CFG nodes
-        for _, _, cfg_node, _ in block_results:
-            for job in entries:
-                if job.addr == cfg_node.addr:
-                    if cfg_node.function_address != job.func_addr:
-                        print(f"Node with addr {cfg_node.addr:x} and funct_addr {cfg_node.function_address:x} updated to funct_addr {job.func_addr:x}")
-                    cfg_node.function_address = job.func_addr
-
-        return entries
-
-    def _scan_single_irsb(self, cfg_job, current_func_addr) -> list[CFGJob]:
         """
         Generate a list of successors (generating them each as entries) to IRSB.
         Updates previous CFG nodes with edges.
@@ -4633,8 +4492,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
         addr = cfg_job.addr
 
-        print(f"ADDRESS EN GENERATE CFGNODE: {hex(addr)} with job type {cfg_job.job_type} and function addr {hex(current_function_addr)}")
-
         try:
             if addr in self._nodes:
                 cfg_node = self._nodes[addr]
@@ -4644,8 +4501,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     # the node has been assigned to another function before.
                     # we should update the function address.
                     current_function_addr = cfg_node.function_address
-
-                print("Node already exists!")
 
                 return addr, current_function_addr, cfg_node, irsb
 
@@ -4790,6 +4645,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
                 lifted_block = self._lift(
                     addr,
+                    use_multi_blocks_cache=True,
                     size=distance,
                     collect_data_refs=True,
                     strict_block_end=True,
@@ -4834,6 +4690,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     try:
                         lifted_block = self._lift(
                             addr_0,
+                            use_multi_blocks_cache=True,
                             size=distance,
                             collect_data_refs=True,
                             strict_block_end=True,
@@ -5022,49 +4879,10 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
         except (SimMemoryError, SimEngineError):
             return None, None, None, None
 
-    def _calculate_block_max_distance(self, addr, real_addr) -> int:
-        distance = VEX_IRSB_MAX_SIZE
-        # if there is exception handling code, check the distance between `addr` and the closest ending address
-        if self._exception_handling_by_endaddr:
-            next_end = next(self._exception_handling_by_endaddr.irange(minimum=real_addr), None)
-            if next_end is not None:
-                distance = min(distance, next_end - real_addr)
-
-        # if possible, check the distance between `addr` and the end of this section
-        obj = self.project.loader.find_object_containing(addr, membership_check=False)
-        if obj:
-            if (section := obj.find_section_containing(addr)) is not None:
-                distance_ = section.vaddr + section.memsize - real_addr
-                distance = min(distance_, VEX_IRSB_MAX_SIZE)
-            elif (segment := obj.find_segment_containing(addr)) is not None:
-                distance_segment = segment.vaddr + segment.memsize - real_addr
-                distance = min(distance_segment, VEX_IRSB_MAX_SIZE)
-
-        # also check the distance between `addr` and the closest function.
-        # we don't want to have a basic block that spans across function boundaries
-        next_func = self.functions.ceiling_func(addr + 1)
-        if next_func is not None:
-            distance_to_func = (
-                next_func.addr & (~1) if is_arm_arch(self.project.arch) else next_func.addr
-            ) - real_addr
-            if distance_to_func != 0:
-                distance = distance_to_func if distance is None else min(distance, distance_to_func)
-
-        # in the end, check the distance between `addr` and the closest occupied region in segment list
-        next_noncode_addr = self._seg_list.next_pos_with_sort_not_in(addr, {"code"}, max_distance=distance)
-        if next_noncode_addr is not None:
-            distance_to_noncode_addr = next_noncode_addr - real_addr
-            distance = min(distance, distance_to_noncode_addr)
-
-        return distance
-
-    def _handle_nodecode_block():
-        pass
-
     def _generate_cfgnodes(self, cfg_job, current_function_addr) -> list[tuple]:
         addr = cfg_job.addr
 
-        print(f"ADDRESS EN GENERATE CFGNODESSSS: {hex(addr)} with job type {cfg_job.job_type} and function addr {hex(current_function_addr)}")
+
 
         try:
             # if addr == 4251323:
@@ -5079,7 +4897,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     # we should update the function address.
                     current_function_addr = cfg_node.function_address
 
-                print("Node already exists!")
+
                 return [(addr, current_function_addr, cfg_node, irsb)]
 
             is_x86_x64_arch = self.project.arch.name in ("X86", "AMD64")
@@ -5757,23 +5575,45 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
             return callee_func.returning
         return None
 
-    def _lift_multi(self, addr, *args, opt_level=1, cross_insn_opt=False, **kwargs):
+    def _lift_multi(self, addr, *args, opt_level=1, cross_insn_opt=False, **kwargs) -> None:
         # Test to lift multiple blocks
         try:
             blocks_list = self.project.factory.multi_blocks(
-                addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs
+                addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, skip_stmts=True, max_blocks=1000, backup_state=self._base_state, **kwargs
             )
 
             for i, block in enumerate(blocks_list):
-                print(f"Block {i}:")
-                block.pp()
+                # print(f"Block {i}:")
+                # block.pp()
+                # Cache all lifted blocks
+                self._blocks_cache[block.addr] = block
 
-            return blocks_list
         except Exception as e:
             print(f"Error lifting multiple blocks: {e}")
-            return []
 
-    def _lift(self, addr, *args, opt_level=1, cross_insn_opt=False, **kwargs):  # pylint:disable=arguments-differ
+    def _lift(self, addr, *args, opt_level=1, cross_insn_opt=False, use_multi_blocks_cache=False, size=None, **kwargs):  # pylint:disable=arguments-differ
+
+        if use_multi_blocks_cache:
+            if addr not in self._blocks_cache:
+                self.cache_misses_counter += 1
+                print(f"Cache miss #{self.cache_misses_counter} for address {addr:#x}. Lifting multi blocks to populate the cache...")
+                self._lift_multi(addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)  # This puts many blocks into the cache
+            else:
+                self.cache_hits_counter += 1
+                print(f"Cache hit #{self.cache_hits_counter} for address {addr:#x}.")
+
+            print(f"Hits rate: {self.cache_hits_counter / (self.cache_hits_counter + self.cache_misses_counter):.2%}")
+            print(f"Misses rate: {self.cache_misses_counter / (self.cache_hits_counter + self.cache_misses_counter):.2%}")
+
+            print(f"Cache max size: {self._blocks_cache.maxsize}")
+            print(f"Cache current size: {self._blocks_cache.currsize}")
+            try:
+                block = self._blocks_cache[addr]
+                block.calculate_and_set_bytes(addr, size)  # This is necessary for the case when the block is supposed to have a different size than the irsb size it contains
+                return block
+            except KeyError:
+                print(f"Address {addr:#x} not found in blocks cache after lifting multi blocks. Trying normal lift.")
+
         kwargs["extra_stop_points"] = set(self._known_thunks)
 
         return super()._lift(addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)

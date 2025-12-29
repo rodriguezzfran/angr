@@ -246,9 +246,16 @@ class Block(Serializable):
         else:
             self._parse_vex_info(self._vex)
 
+        self.calculate_and_set_bytes(
+            addr,
+            size,
+            byte_string=byte_string
+        )
+
+    def calculate_and_set_bytes(self, addr, size, byte_string=None) -> None:
         if byte_string is None:
-            if backup_state is not None:
-                buffer, _, offset = self._vex_engine._load_bytes(addr - thumb, size, state=backup_state)
+            if self._backup_state is not None:
+                buffer, _, offset = self._vex_engine._load_bytes(addr - self.thumb, size, state=self._backup_state)
                 self._bytes = buffer[offset:]
                 if type(self._bytes) is memoryview:
                     self._bytes = bytes(self._bytes)
@@ -359,18 +366,6 @@ class Block(Serializable):
             self.reset_initial_regs()
 
         return vex
-
-    def get_irsb(self, skip_stmts: bool, relift_if_not_present: bool = False) -> IRSB | PcodeIRSB:
-        if skip_stmts:
-            if not self._vex_nostmt and relift_if_not_present:
-                self._vex_nostmt = self._lift_nocache(True)
-                self._parse_vex_info(self._vex_nostmt)
-            return self._vex_nostmt
-        else:
-            if not self._vex and relift_if_not_present:
-                self._vex = self._lift_nocache(False)
-                self._parse_vex_info(self._vex)
-            return self._vex
 
     @property
     def vex(self) -> IRSB | PcodeIRSB:
