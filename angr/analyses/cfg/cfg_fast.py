@@ -2494,6 +2494,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     if job.jumpkind in {"Ijk_Boring", "Ijk_FakeRet"}:
                         self._decoding_assumption_relations.add_edge(real_addr, job.addr & 0xFFFF_FFFE)
 
+        print(f"FOR BLOCK {cfg_node.addr} SUCCESSORS: {[job.addr for job in entries]}")
+
         return entries
 
 
@@ -4631,21 +4633,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
             irsb: pyvex.IRSB | PcodeIRSB | None = None
             lifted_block: Block = None  # type:ignore
             try:
-                # fill in the cache
-                self._lift_multi(
-                    addr,
-                    collect_data_refs=True,
-                    strict_block_end=True,
-                    load_from_ro_regions=True,
-                    initial_regs=initial_regs,
-                    backup_state=self._base_state,
-                    skip_stmts=True,
-                    max_blocks=1000,
-                )
-
                 lifted_block = self._lift(
                     addr,
-                    use_multi_blocks_cache=True,
+                    use_multi_blocks_cache=cfg_job.job_type == CFGJobType.NORMAL,
                     size=distance,
                     collect_data_refs=True,
                     strict_block_end=True,
@@ -4690,7 +4680,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     try:
                         lifted_block = self._lift(
                             addr_0,
-                            use_multi_blocks_cache=True,
+                            use_multi_blocks_cache=cfg_job.job_type == CFGJobType.NORMAL,
                             size=distance,
                             collect_data_refs=True,
                             strict_block_end=True,
@@ -5575,6 +5565,22 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
             return callee_func.returning
         return None
 
+    def print_blocks_cache_stats(self):
+        print(f"-----------------CACHE STATS-----------------")
+        print(f"Blocks cache max size: {self._blocks_cache.maxsize}")
+        print(f"Blocks cache current size: {self._blocks_cache.currsize}")
+        print(f"Cache hits: {self.cache_hits_counter}")
+        print(f"Cache misses: {self.cache_misses_counter}")
+        total_accesses = self.cache_hits_counter + self.cache_misses_counter
+        if total_accesses > 0:
+            print(f"Cache hit rate: {self.cache_hits_counter / total_accesses:.2%}")
+            print(f"Cache miss rate: {self.cache_misses_counter / total_accesses:.2%}")
+        else:
+            print("No cache accesses recorded.")
+        print("CACHE CONTENTS:")
+        for addr, block in self._blocks_cache.items():
+            print(f"\tAddress: {addr}, Block: {block}")
+
     def _lift_multi(self, addr, *args, opt_level=1, cross_insn_opt=False, **kwargs) -> None:
         # Test to lift multiple blocks
         try:
@@ -5588,6 +5594,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                 # Cache all lifted blocks
                 self._blocks_cache[block.addr] = block
 
+                #self.print_blocks_cache_stats()
+
         except Exception as e:
             print(f"Error lifting multiple blocks: {e}")
 
@@ -5596,23 +5604,19 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
         if use_multi_blocks_cache:
             if addr not in self._blocks_cache:
                 self.cache_misses_counter += 1
-                print(f"Cache miss #{self.cache_misses_counter} for address {addr:#x}. Lifting multi blocks to populate the cache...")
+                #print(f"Cache miss #{self.cache_misses_counter} for address {addr}. Lifting multi blocks to populate the cache...")
                 self._lift_multi(addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)  # This puts many blocks into the cache
             else:
                 self.cache_hits_counter += 1
-                print(f"Cache hit #{self.cache_hits_counter} for address {addr:#x}.")
-
-            print(f"Hits rate: {self.cache_hits_counter / (self.cache_hits_counter + self.cache_misses_counter):.2%}")
-            print(f"Misses rate: {self.cache_misses_counter / (self.cache_hits_counter + self.cache_misses_counter):.2%}")
-
-            print(f"Cache max size: {self._blocks_cache.maxsize}")
-            print(f"Cache current size: {self._blocks_cache.currsize}")
+                #print(f"Cache hit #{self.cache_hits_counter} for address {addr}.")
             try:
                 block = self._blocks_cache[addr]
                 block.calculate_and_set_bytes(addr, size)  # This is necessary for the case when the block is supposed to have a different size than the irsb size it contains
                 return block
             except KeyError:
-                print(f"Address {addr:#x} not found in blocks cache after lifting multi blocks. Trying normal lift.")
+                import pdb
+                pdb.set_trace()
+                print(f"Address {addr} not found in blocks cache after lifting multi blocks. Trying normal lift.")
 
         kwargs["extra_stop_points"] = set(self._known_thunks)
 
