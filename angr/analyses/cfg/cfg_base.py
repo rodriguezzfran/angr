@@ -2723,7 +2723,6 @@ class CFGBase(Analysis):
         """
         if "backup_state" not in kwargs:
             kwargs["backup_state"] = self._base_state
-        
         return self.project.factory.block(addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)
 
     #
