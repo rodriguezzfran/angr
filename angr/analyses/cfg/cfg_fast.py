@@ -2494,7 +2494,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     if job.jumpkind in {"Ijk_Boring", "Ijk_FakeRet"}:
                         self._decoding_assumption_relations.add_edge(real_addr, job.addr & 0xFFFF_FFFE)
 
-        print(f"FOR BLOCK {cfg_node.addr} SUCCESSORS: {[job.addr for job in entries]}")
 
         return entries
 
@@ -3716,6 +3715,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
         self.graph.remove_node(node)
         self._model.remove_node(node.addr, node)
 
+        self._remove_block_from_blocks_cache(node.addr)
+
         # We wanna remove the function as well
         if node.addr in self.kb.functions:
             del self.kb.functions[node.addr]
@@ -3880,6 +3881,10 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
     def _clean_pending_exits(self):
         self._pending_jobs.cleanup()
+
+    def _remove_block_from_blocks_cache(self, addr):
+        if addr in self._blocks_cache:
+            del self._blocks_cache[addr]
 
     #
     # Graph utils
@@ -4633,16 +4638,16 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
             irsb: pyvex.IRSB | PcodeIRSB | None = None
             lifted_block: Block = None  # type:ignore
             try:
-                lifted_block = self._lift(
+                lifted_block = self._lift(  # may raise SimTranslationError
                     addr,
-                    use_multi_blocks_cache=cfg_job.job_type == CFGJobType.NORMAL,
+                    use_multi_blocks_cache=True,
                     size=distance,
                     collect_data_refs=True,
                     strict_block_end=True,
                     load_from_ro_regions=True,
                     initial_regs=initial_regs,
                 )
-                irsb = lifted_block.vex_nostmt  # may raise SimTranslationError
+                irsb = lifted_block.vex_nostmt
             except SimTranslationError:
                 nodecode = True
 
@@ -4667,6 +4672,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     nodecode = True
 
                 if (nodecode or irsb.size == 0 or irsb.jumpkind == "Ijk_NoDecode") and switch_mode_on_nodecode:
+                    # we could not decode the block, so it's presence in the blocks cache is unnecessary
+                    self._remove_block_from_blocks_cache(addr)
+
                     # maybe the current mode is wrong?
                     nodecode = False
                     addr_0 = addr + 1 if addr % 2 == 0 else addr - 1
@@ -4680,7 +4688,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     try:
                         lifted_block = self._lift(
                             addr_0,
-                            use_multi_blocks_cache=cfg_job.job_type == CFGJobType.NORMAL,
+                            use_multi_blocks_cache=True,
                             size=distance,
                             collect_data_refs=True,
                             strict_block_end=True,
@@ -4740,6 +4748,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                         self._decoding_assumptions[real_addr] = assumption
 
             if nodecode or irsb.size == 0 or irsb.jumpkind == "Ijk_NoDecode":
+                # we could not decode the block, so it's presence in the blocks cache is unnecessary
+                self._remove_block_from_blocks_cache(addr)
+
                 # decoding error
                 # is the current location already occupied and marked as non-code?
                 # it happens in cases like the following:
@@ -5356,6 +5367,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
             assert self._decoding_assumption_relations is not None
             if assumption_addr in self._decoding_assumption_relations:
                 self._decoding_assumption_relations.remove_node(assumption_addr)
+
+            self._remove_block_from_blocks_cache(assumption_addr)
 
             assumption = self._decoding_assumptions.get(assumption_addr)
             if assumption is None:
