@@ -130,7 +130,7 @@ class SimplifierAILEngine(
 
         new_args = None
 
-        if stmt.args:
+        if stmt.args is not None:
             new_args = []
             for arg in stmt.args:
                 new_arg = self._expr(arg)
@@ -446,6 +446,8 @@ class SimplifierAILEngine(
     _handle_binop_CmpGT = _handle_binop_Default
 
     _handle_binop_CmpGE = _handle_binop_Default
+
+    _handle_binop_CmpORD = _handle_binop_Default
 
     _handle_binop_Concat = _handle_binop_Default
 

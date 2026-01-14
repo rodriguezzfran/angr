@@ -720,7 +720,7 @@ class VariableManagerInternal(Serializable):
             if variable.name == var.name:
                 vars_list.append(var)
 
-        accesses = []
+        accesses: list[VariableAccess] = []
         for var in vars_list:
             accesses.extend(self.get_variable_accesses(var))
 
@@ -903,8 +903,12 @@ class VariableManagerInternal(Serializable):
                     continue
                 if labels is not None and var.addr in labels:
                     var.name = labels[var.addr]
+                    # poor man's demangling
+                    var.name = var.name.removeprefix("?")
                     if "@@" in var.name:
                         var.name = var.name[: var.name.index("@@")]
+                    if "@" in var.name:
+                        var.name = "::".join(var.name.split("@")[::-1])
                 elif isinstance(var.addr, int):
                     var.name = f"g_{var.addr:x}"
                 elif var.ident is not None:

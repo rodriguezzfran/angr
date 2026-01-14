@@ -25,11 +25,13 @@ from angr.analyses.decompiler.optimization_passes import (
     CrossJumpReverter,
     FlipBooleanCmp,
     InlinedStringTransformationSimplifier,
+    InlinedStrlenSimplifier,
     CallStatementRewriter,
     SwitchReusedEntryRewriter,
     ConditionConstantPropagation,
     DetermineLoadSizes,
     PostStructuringPeepholeOptimizationPass,
+    EagerStdStringConcatenationPass,
 )
 
 
@@ -60,11 +62,13 @@ preset_full = DecompilationPreset(
         CrossJumpReverter,
         FlipBooleanCmp,
         InlinedStringTransformationSimplifier,
+        InlinedStrlenSimplifier,
         CallStatementRewriter,
         SwitchReusedEntryRewriter,
         ConditionConstantPropagation,
         DetermineLoadSizes,
         PostStructuringPeepholeOptimizationPass,
+        EagerStdStringConcatenationPass,
     ],
 )
 

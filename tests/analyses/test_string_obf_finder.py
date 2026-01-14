@@ -3,8 +3,6 @@ from __future__ import annotations
 from unittest import TestCase, main
 import os
 
-from tests.common import slow_test
-
 import angr
 from angr.sim_type import parse_signature
 
@@ -20,9 +18,6 @@ binaries_base = os.path.join(
 
 class TestStringObfFinder(TestCase):
     def test_netfilter_b64(self):
-        # - type 1 string obfuscation: deobfuscator at 0x140001A90
-        # - type 2 string obfuscation: deobfuscator at 0x140001A18
-
         bin_path = os.path.join(binaries_base, "x86_64", "netfilter_b64.sys")
 
         proj = angr.Project(bin_path, auto_load_libs=False)
@@ -39,8 +34,11 @@ class TestStringObfFinder(TestCase):
 
         proj.analyses.CompleteCallingConventions(recover_variables=True)
 
+        type1_deobfuscator = proj.kb.functions[0x140001A90]
+        type2_deobfuscator = proj.kb.functions[0x140001A18]
+
         # it will update kb.obfuscations
-        _ = proj.analyses.StringObfuscationFinder()
+        _ = proj.analyses.StringObfuscationFinder(functions=[type1_deobfuscator, type2_deobfuscator], fail_fast=True)
         assert proj.kb.obfuscations.type1_deobfuscated_strings
         assert proj.kb.obfuscations.type2_deobfuscated_strings
 
@@ -64,7 +62,6 @@ class TestStringObfFinder(TestCase):
         # print(dec.codegen.text)
         assert "\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Internet Settings" in dec.codegen.text
 
-    @slow_test
     def test_find_obfuscated_strings_543991(self):
         bin_path = os.path.join(
             binaries_base, "x86_64", "windows", "543991ca8d1c65113dff039b85ae3f9a87f503daec30f46929fd454bc57e5a91.sys"
@@ -74,13 +71,12 @@ class TestStringObfFinder(TestCase):
         _ = proj.analyses.CFG(force_smart_scan=False, normalize=True, show_progressbar=False)
 
         proj.analyses.CompleteCallingConventions(recover_variables=True)
-        finder = proj.analyses.StringObfuscationFinder()
+        finder = proj.analyses.StringObfuscationFinder(fail_fast=True)
 
         assert not finder.type1_candidates
         assert not finder.type2_candidates
         assert not finder.type3_candidates
 
-    @slow_test
     def test_find_obfuscated_strings_28ce9d(self):
         # - type 3 string obfuscation
         bin_path = os.path.join(
@@ -90,16 +86,18 @@ class TestStringObfFinder(TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         _ = proj.analyses.CFG(force_smart_scan=False, normalize=True, show_progressbar=False)
         proj.analyses.CompleteCallingConventions(recover_variables=True)
-        _ = proj.analyses.StringObfuscationFinder()
 
-        dec = proj.analyses.Decompiler(proj.kb.functions[0x140004790])
+        obfuscated_func = proj.kb.functions[0x140004790]
+        deobfuscator_func = proj.kb.functions[0x140013718]
+        _ = proj.analyses.StringObfuscationFinder(functions=[obfuscated_func, deobfuscator_func], fail_fast=True)
+
+        dec = proj.analyses.Decompiler(obfuscated_func)
         assert dec.codegen is not None and dec.codegen.text is not None
         # print(dec.codegen.text)
         assert "socket create false\\n" in dec.codegen.text
         assert "connet false\\n" in dec.codegen.text
         assert "message Size err\\n" in dec.codegen.text
 
-    @slow_test
     def test_find_obfuscated_strings_dd5640(self):
         # - type 3 string obfuscation
         bin_path = os.path.join(
@@ -109,9 +107,12 @@ class TestStringObfFinder(TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         _ = proj.analyses.CFG(force_smart_scan=False, normalize=True, show_progressbar=False)
         proj.analyses.CompleteCallingConventions(recover_variables=True)
-        _ = proj.analyses.StringObfuscationFinder()
 
-        dec = proj.analyses.Decompiler(proj.kb.functions[0x1400017E8])
+        obfuscated_func = proj.kb.functions[0x1400017E8]
+        deobfuscator_func = proj.kb.functions[0x140027384]
+        _ = proj.analyses.StringObfuscationFinder(functions=[deobfuscator_func, obfuscated_func], fail_fast=True)
+
+        dec = proj.analyses.Decompiler(obfuscated_func, options=[("display_notes", True)])
         assert dec.codegen is not None and dec.codegen.text is not None
         # print(dec.codegen.text)
         assert "IsWhitelist->RvStrJson=%s\\\\n" in dec.codegen.text

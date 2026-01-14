@@ -438,7 +438,7 @@ class SimEngineVRBase(
                     ident=self.state.variable_manager[self.func_addr].next_variable_ident("register"),
                     region=self.func_addr,
                 )
-                self.state.variable_manager[self.func_addr].add_variable("register", vvar.oident, variable)
+                self.state.variable_manager[self.func_addr].add_variable("register", vvar.reg_offset, variable)
             elif vvar.was_tmp:
                 # FIXME: we treat all tmp vvars as registers
                 assert vvar.tmp_idx is not None
@@ -482,6 +482,11 @@ class SimEngineVRBase(
                 # the constraint below is a default constraint that may conflict with more specific ones with different
                 # sizes; we post-process at the very end of VRA to remove conflicting default constraints.
                 self.state.add_type_constraint(typevars.Subtype(typevar, typeconsts.int_type(variable.size * 8)))
+
+            # add existing (delayed) type constraints
+            if richr.type_constraints is not None:
+                for tc in richr.type_constraints:
+                    self.state.add_type_constraint(tc)
 
         return variable
 
@@ -1095,7 +1100,43 @@ class SimEngineVRBase(
         if value is None:
             # the value does not exist.
             value = self.state.top(vvar.bits)
-            if create_variable:
+
+            # is there already a variable?
+            variable = None
+            if vvar.category == ailment.Expr.VirtualVariableCategory.REGISTER:
+                var_candidates: list[tuple[SimVariable, int]] = self.state.variable_manager[
+                    self.func_addr
+                ].find_variables_by_stmt(
+                    self.block.addr,
+                    self.stmt_idx,
+                    "register",
+                    block_idx=cast(ailment.Block, self.block).idx if isinstance(self.block, ailment.Block) else None,
+                )
+                existing_vars: list[tuple[SimVariable, int]] = []
+                for var_candidate, var_offset in var_candidates:
+                    if isinstance(var_candidate, SimRegisterVariable) and var_candidate.reg == vvar.reg_offset:
+                        existing_vars.append((var_candidate, var_offset))
+                if existing_vars:
+                    variable, _ = existing_vars[0]
+                    value = self.state.annotate_with_variables(value, [(0, variable)])
+            elif vvar.category == ailment.Expr.VirtualVariableCategory.STACK:
+                var_candidates: list[tuple[SimVariable, int]] = self.state.variable_manager[
+                    self.func_addr
+                ].find_variables_by_stmt(
+                    self.block.addr,
+                    self.stmt_idx,
+                    "memory",
+                    block_idx=cast(ailment.Block, self.block).idx if isinstance(self.block, ailment.Block) else None,
+                )
+                existing_vars: list[tuple[SimVariable, int]] = []
+                for var_candidate, var_offset in var_candidates:
+                    if isinstance(var_candidate, SimStackVariable) and var_candidate.offset == vvar.stack_offset:
+                        existing_vars.append((var_candidate, var_offset))
+                if existing_vars:
+                    variable, _ = existing_vars[0]
+                    value = self.state.annotate_with_variables(value, [(0, variable)])
+
+            if variable is None and create_variable:
                 # create a new variable if necessary
                 if vvar.category == ailment.Expr.VirtualVariableCategory.REGISTER:
                     variable = SimRegisterVariable(
@@ -1177,7 +1218,7 @@ class SimEngineVRBase(
         is_store: bool,
         size: int | None,
         offset: int,
-    ) -> DerivedTypeVariable:
+    ) -> TypeVariable | DerivedTypeVariable:
         if isinstance(typevar, DerivedTypeVariable):
             if isinstance(typevar.labels[-1], AddN):
                 offset += typevar.labels[-1].n
@@ -1193,8 +1234,23 @@ class SimEngineVRBase(
                     typevar = typevars.new_dtv(typevar.type_var, labels=typevar.labels[:-1])
         lbl = Store() if is_store else Load()
         bits = size * self.project.arch.byte_width if size is not None else MAX_POINTSTO_BITS
+
+        if offset >= 4096 and self._likely_pointer(offset):
+            # typevar is the actual offset
+            return TypeVariable()
+
         return DerivedTypeVariable(
             typevar,
             None,
             labels=(lbl, typevars.HasField(bits, offset)),
         )
+
+    def _likely_pointer(self, offset: int) -> bool:
+        obj = self.project.loader.find_object_containing(offset)
+        if obj is None:
+            return False
+        seg = self.project.loader.find_segment_containing(offset)
+        if seg is not None:
+            return True
+        sec = self.project.loader.find_section_containing(offset)
+        return sec is not None

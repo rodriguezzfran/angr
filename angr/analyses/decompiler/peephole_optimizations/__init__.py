@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any
 
 from .a_div_const_add_a_mul_n_div_const import ADivConstAddAMulNDivConst
 from .a_mul_const_div_shr_const import AMulConstDivShrConst
@@ -24,6 +25,7 @@ from .one_sub_bool import OneSubBool
 from .bool_expr_xor_1 import BoolExprXor1
 from .bitwise_or_to_logical_or import BitwiseOrToLogicalOr
 from .remove_redundant_bitmasks import RemoveRedundantBitmasks
+from .remove_redundant_derefs import RemoveRedundantDerefs
 from .remove_redundant_nots import RemoveRedundantNots
 from .remove_redundant_reinterprets import RemoveRedundantReinterprets
 from .remove_redundant_shifts import RemoveRedundantShifts
@@ -44,6 +46,7 @@ from .tidy_stack_addr import TidyStackAddr
 from .invert_negated_logical_conjuction_disjunction import InvertNegatedLogicalConjunctionsAndDisjunctions
 from .rol_ror import RolRorRewriter
 from .inlined_memcpy import InlinedMemcpy
+from .inlined_memset import InlinedMemset
 from .inlined_strcpy import InlinedStrcpy
 from .inlined_strcpy_consolidation import InlinedStrcpyConsolidation
 from .inlined_wcscpy import InlinedWcscpy
@@ -57,7 +60,7 @@ from .rewrite_conv_mul import RewriteConvMul
 from .base import PeepholeOptimizationExprBase, PeepholeOptimizationStmtBase, PeepholeOptimizationMultiStmtBase
 
 
-ALL_PEEPHOLE_OPTS: list[type[PeepholeOptimizationExprBase]] = [
+ALL_PEEPHOLE_OPTS: list[Any] = [
     ADivConstAddAMulNDivConst,
     AMulConstDivShrConst,
     AShlConstSubA,
@@ -82,6 +85,7 @@ ALL_PEEPHOLE_OPTS: list[type[PeepholeOptimizationExprBase]] = [
     BoolExprXor1,
     BitwiseOrToLogicalOr,
     RemoveRedundantBitmasks,
+    RemoveRedundantDerefs,
     RemoveRedundantNots,
     RemoveRedundantReinterprets,
     RemoveRedundantShifts,
@@ -102,6 +106,7 @@ ALL_PEEPHOLE_OPTS: list[type[PeepholeOptimizationExprBase]] = [
     InvertNegatedLogicalConjunctionsAndDisjunctions,
     RolRorRewriter,
     InlinedMemcpy,
+    InlinedMemset,
     InlinedStrcpy,
     InlinedStrcpyConsolidation,
     InlinedWcscpy,

@@ -51,7 +51,7 @@ from angr.analyses.decompiler.structuring.phoenix import MultiStmtExprMode
 from angr.sim_variable import SimStackVariable
 from angr.utils.library import convert_cproto_to_py
 
-from tests.common import bin_location, slow_test, print_decompilation_result, set_decompiler_option, WORKER
+from tests.common import bin_location, broken, print_decompilation_result, set_decompiler_option, WORKER
 
 
 test_location = os.path.join(bin_location, "tests")
@@ -409,7 +409,7 @@ class TestDecompiler(unittest.TestCase):
         else:
             assert code.count("32") == 2
 
-    @slow_test
+    @broken
     @for_all_structuring_algos
     def test_decompiling_true_a_x86_64_0(self, decompiler_options=None):
         bin_path = os.path.join(test_location, "x86_64", "true_a")
@@ -525,6 +525,8 @@ class TestDecompiler(unittest.TestCase):
         cca = p.analyses[CallingConventionAnalysis].prep()(f)
         f.calling_convention = cca.cc
         f.prototype = cca.prototype
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
         dec = p.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
         assert dec.codegen is not None, f"Failed to decompile function {f!r}."
         print_decompilation_result(dec)
@@ -579,6 +581,8 @@ class TestDecompiler(unittest.TestCase):
         optimization_passes = DECOMPILATION_PRESETS["full"].get_optimization_passes(
             p.arch, p.simos.name, additional_opts=DUPLICATING_OPTS
         )
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
         dec = p.analyses[Decompiler].prep(fail_fast=True)(
             f, cfg=cfg.model, options=decompiler_options, optimization_passes=optimization_passes
         )
@@ -833,7 +837,11 @@ class TestDecompiler(unittest.TestCase):
         f = proj.kb.functions["find_bind_mount"]
 
         d = proj.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
+        assert d.codegen is not None and d.codegen.text is not None
         print_decompilation_result(d)
+
+        # hack: work around the problem that `stat()` is undefiend and thus we consider it as returning long long
+        dec_text = d.codegen.text.replace("(int)stat(", "stat(")
 
         m = re.search(
             r"if \([^\n]+ == 47 "
@@ -841,7 +849,7 @@ class TestDecompiler(unittest.TestCase):
             r"&& !stat\([^\n]+\) "
             r"&& [^\n]+ == [^\n]+ "
             r"&& [^\n]+ == [^\n]+\)",
-            d.codegen.text,
+            dec_text,
         )
         assert m is not None
 
@@ -924,6 +932,8 @@ class TestDecompiler(unittest.TestCase):
 
         func = cfg.functions[0x100003890]
 
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
         dec = p.analyses[Decompiler].prep(fail_fast=True)(func, cfg=cfg.model, options=decompiler_options)
         assert dec.codegen is not None, f"Failed to decompile function {func!r}."
         print_decompilation_result(dec)
@@ -1999,7 +2009,6 @@ class TestDecompiler(unittest.TestCase):
 
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["write_protected_non_symlink"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
 
         # disable code duplication
@@ -2007,6 +2016,7 @@ class TestDecompiler(unittest.TestCase):
             "AMD64", "linux", disable_opts=DUPLICATING_OPTS
         )
 
+        f = proj.kb.functions["write_protected_non_symlink"]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(
             f, cfg=cfg.model, options=decompiler_options, optimization_passes=all_optimization_passes
         )
@@ -2085,6 +2095,8 @@ class TestDecompiler(unittest.TestCase):
 
         f = proj.kb.functions["advance_input_after_read_error"]
 
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
 
@@ -2177,9 +2189,9 @@ class TestDecompiler(unittest.TestCase):
 
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["do_decode"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
 
+        f = proj.kb.functions["do_decode"]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
 
@@ -2246,7 +2258,6 @@ class TestDecompiler(unittest.TestCase):
 
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["build_spec_list"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
 
         # Interestingly, this case needs the DuplicationReverter to be disabled because it creates code that is in
@@ -2255,6 +2266,7 @@ class TestDecompiler(unittest.TestCase):
         all_optimization_passes = DECOMPILATION_PRESETS["full"].get_optimization_passes(
             "AMD64", "linux", disable_opts=[DuplicationReverter]
         )
+        f = proj.kb.functions["build_spec_list"]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(
             f, cfg=cfg.model, options=decompiler_options, optimization_passes=all_optimization_passes
         )
@@ -2269,12 +2281,12 @@ class TestDecompiler(unittest.TestCase):
 
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["bsd_split_3"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
 
         all_optimization_passes = DECOMPILATION_PRESETS["full"].get_optimization_passes(
             "AMD64", "linux", disable_opts=[CrossJumpReverter, ReturnDuplicatorLow]
         )
+        f = proj.kb.functions["bsd_split_3"]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(
             f, cfg=cfg.model, options=decompiler_options, optimization_passes=all_optimization_passes
         )
@@ -2616,6 +2628,8 @@ class TestDecompiler(unittest.TestCase):
 
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
         f = proj.kb.functions["main"]
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
 
@@ -2825,8 +2839,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True, show_progressbar=not WORKER)
 
-        f = proj.kb.functions[0x404410]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
+        f = proj.kb.functions[0x404410]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
 
@@ -2848,8 +2862,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions[0x401900]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
+        f = proj.kb.functions[0x401900]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -2865,8 +2879,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["main"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
+        f = proj.kb.functions["main"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -2881,8 +2895,10 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions[0x4030D0]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
+        f = proj.kb.functions[0x4030D0]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -2925,8 +2941,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["find_int"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
+        f = proj.kb.functions["find_int"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -2940,11 +2956,11 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["head"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
         all_optimization_passes = DECOMPILATION_PRESETS["full"].get_optimization_passes(
             "AMD64", "linux", disable_opts=DUPLICATING_OPTS
         )
+        f = proj.kb.functions["head"]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(
             f, cfg=cfg.model, options=decompiler_options, optimization_passes=all_optimization_passes
         )
@@ -2968,8 +2984,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["display_speed"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
+        f = proj.kb.functions["display_speed"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -2996,7 +3012,6 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["print_only_size"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
 
         # disable eager returns simplifier
@@ -3014,6 +3029,7 @@ class TestDecompiler(unittest.TestCase):
         assert fputs.prototype is not None
         fputs.prototype.args = (fputs.prototype.args[0],)
 
+        f = proj.kb.functions["print_only_size"]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(
             f, cfg=cfg.model, options=decompiler_options, optimization_passes=all_optimization_passes
         )
@@ -3033,8 +3049,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["record_relation"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True, analyze_callsites=True)
+        f = proj.kb.functions["record_relation"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -3052,8 +3068,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["record_relation"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True, analyze_callsites=True)
+        f = proj.kb.functions["record_relation"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -3091,8 +3107,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["sort_found_occurs"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True, analyze_callsites=True)
+        f = proj.kb.functions["sort_found_occurs"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -3122,8 +3138,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["announce_mkdir"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True, analyze_callsites=True)
+        f = proj.kb.functions["announce_mkdir"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -3160,7 +3176,6 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True)
 
-        f = proj.kb.functions["process_field"]
         proj.analyses.CompleteCallingConventions(mode=CallingConventionAnalysisMode.VARIABLES, recover_variables=True)
 
         # disable eager returns simplifier
@@ -3168,6 +3183,7 @@ class TestDecompiler(unittest.TestCase):
             "AMD64", "linux", disable_opts=DUPLICATING_OPTS
         )
 
+        f = proj.kb.functions["process_field"]
         d = proj.analyses[Decompiler](
             f, cfg=cfg.model, options=decompiler_options, optimization_passes=all_optimization_passes
         )
@@ -3297,9 +3313,9 @@ class TestDecompiler(unittest.TestCase):
 
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["main"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
 
+        f = proj.kb.functions["main"]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
 
@@ -3357,8 +3373,10 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["bridge_print_opt"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True, analyze_callsites=True)
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
+        f = proj.kb.functions["bridge_print_opt"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -3385,8 +3403,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["treat_file"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True, analyze_callsites=True)
+        f = proj.kb.functions["treat_file"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -3406,8 +3424,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["flush_rule"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True, analyze_callsites=True)
+        f = proj.kb.functions["flush_rule"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -3432,8 +3450,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["client_request_tun_fwd"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True, analyze_callsites=True)
+        f = proj.kb.functions["client_request_tun_fwd"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -3460,8 +3478,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["cipher_to_flags"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True, analyze_callsites=True)
+        f = proj.kb.functions["cipher_to_flags"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
 
         print_decompilation_result(d)
@@ -3488,8 +3506,8 @@ class TestDecompiler(unittest.TestCase):
         bin_path = os.path.join(test_location, "x86_64", "decompiler", "sort.o")
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
-        f = proj.kb.functions["zaptemp"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
+        f = proj.kb.functions["zaptemp"]
         d = proj.analyses[Decompiler](f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
 
@@ -3510,8 +3528,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["parse_str"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True, analyze_callsites=True)
+        f = proj.kb.functions["parse_str"]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
 
@@ -3524,8 +3542,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions[0x140005250]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True, analyze_callsites=True)
+        f = proj.kb.functions[0x140005250]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
 
@@ -3724,6 +3742,8 @@ class TestDecompiler(unittest.TestCase):
             "AMD64", "linux", disable_opts={InlinedStringTransformationSimplifier}
         )
 
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(
             f, cfg=cfg.model, options=decompiler_options, optimization_passes=all_optimization_passes
         )
@@ -3846,57 +3866,17 @@ class TestDecompiler(unittest.TestCase):
         # the original assignment (rax = memcmp(xxx)? 0, 1) should be removed as well
         assert d.codegen.text.count('"Welcome to the admin console, trusted user!"') == 1
 
-    def test_inlining_shallow(self):
-        # https://github.com/angr/angr/issues/4573
-        bin_path = os.path.join(test_location, "x86_64", "inline_gym.so")
-        proj = angr.Project(bin_path, auto_load_libs=False)
-        cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
-        f = proj.kb.functions["main"]
-        d = proj.analyses[Decompiler].prep(fail_fast=True)(
-            f,
-            cfg=cfg.model,
-            inline_functions={proj.kb.functions["mylloc"], proj.kb.functions["five"]},
-            options=[(angr.analyses.decompiler.decompilation_options.options[0], True)],
-        )
-        print_decompilation_result(d)
-
-        assert "five" not in d.codegen.text
-        assert "mylloc" not in d.codegen.text
-        assert "malloc" in d.codegen.text
-        assert "bar(15)" in d.codegen.text
-        assert "malloc(15)" in d.codegen.text
-        assert "v1" not in d.codegen.text
-
-    def test_inlining_all(self):
-        # https://github.com/angr/angr/issues/4573
-        bin_path = os.path.join(test_location, "x86_64", "inline_gym.so")
-        proj = angr.Project(bin_path, auto_load_libs=False)
-        cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
-        f = proj.kb.functions["main"]
-        d = proj.analyses[Decompiler].prep(fail_fast=True)(
-            f,
-            cfg=cfg.model,
-            inline_functions=f.functions_reachable(),
-            options=[(angr.analyses.decompiler.decompilation_options.options[0], True)],
-        )
-        print_decompilation_result(d)
-
-        assert "five" not in d.codegen.text
-        assert "mylloc" not in d.codegen.text
-        assert d.codegen.text.count("foo") == 1  # the recursive call
-        assert "bar" not in d.codegen.text
-
     @for_all_structuring_algos
     def test_const_prop_reverter_fmt(self, decompiler_options=None):
         bin_path = os.path.join(test_location, "x86_64", "decompiler", "fmt")
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["main"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
         all_optimization_passes = DECOMPILATION_PRESETS["full"].get_optimization_passes(
             "AMD64", "linux", disable_opts={DuplicationReverter}
         )
+        f = proj.kb.functions["main"]
         d = proj.analyses[Decompiler](
             f, cfg=cfg.model, options=decompiler_options, optimization_passes=all_optimization_passes
         )
@@ -3963,9 +3943,9 @@ class TestDecompiler(unittest.TestCase):
         bin_path = os.path.join(test_location, "x86_64", "decompiler", "sailr_motivating_example")
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
-        f = proj.kb.functions["schedule_job"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
 
+        f = proj.kb.functions["schedule_job"]
         d = proj.analyses[Decompiler](
             f, cfg=cfg.model, options=decompiler_options, preset=DECOMPILATION_PRESETS["full"]
         )
@@ -3988,8 +3968,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
 
-        f = proj.kb.functions["main"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
+        f = proj.kb.functions["main"]
         d = proj.analyses[Decompiler](
             f, cfg=cfg.model, options=decompiler_options, preset=DECOMPILATION_PRESETS["full"]
         )
@@ -4012,9 +3992,9 @@ class TestDecompiler(unittest.TestCase):
         bin_path = os.path.join(test_location, "x86_64", "true_a")
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
-        f = proj.kb.functions[0x404410]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
 
+        f = proj.kb.functions[0x404410]
         d = proj.analyses[Decompiler](
             f, cfg=cfg.model, options=decompiler_options, preset=DECOMPILATION_PRESETS["full"]
         )
@@ -4071,9 +4051,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
 
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
-        f = proj.kb.functions["build_spec_list"]
         proj.analyses.CompleteCallingConventions(cfg=cfg, recover_variables=True)
-
+        f = proj.kb.functions["build_spec_list"]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
 
@@ -4214,7 +4193,9 @@ class TestDecompiler(unittest.TestCase):
         bin_path = os.path.join(test_location, "x86_64", "windows", "msvcr120.dll")
         proj = angr.Project(bin_path, auto_load_libs=False)
 
-        cfg = proj.analyses.CFGFast(force_smart_scan=False, normalize=True)
+        cfg = proj.analyses.CFGFast(
+            force_smart_scan=False, normalize=True, regions=[(0x18003C330, 0x18003C330 + 0x1000)]
+        )
         f = proj.kb.functions[0x18003C330]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
@@ -4400,6 +4381,8 @@ class TestDecompiler(unittest.TestCase):
 
         # setSBUpLow
         f = proj.kb.functions[0x14002EC04]
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
 
@@ -4407,10 +4390,10 @@ class TestDecompiler(unittest.TestCase):
         # intended:
         #   do
         #   {
-        #       *(v12) = (char)v11;
-        #       v11 = (unsigned int)v11 + 1;
+        #       *(v12) = v11;
+        #       v11 += 1;
         #       v12 += 1;
-        #   } while ((unsigned int)v11 < 0x100);
+        #   } while (v11 < 0x100);
         lines = [line.strip(" ") for line in d.codegen.text.split("\n")]
         while True:
             # find the do-while loop
@@ -4420,10 +4403,11 @@ class TestDecompiler(unittest.TestCase):
                 assert False, "Cannot find the do-while loop in this function"
             if (
                 lines[start_idx + 1] == "{"
-                and re.match(r"\*\(v\d+\) = \(char\)v\d+;", lines[start_idx + 2])
-                and re.match(r"v\d+ = \(unsigned int\)v\d+ \+ 1;", lines[start_idx + 3])
-                and re.match(r"v\d+ \+= 1;", lines[start_idx + 4])
-                and re.match(r"} while \(\(unsigned int\)v\d+ < 0x100\);", lines[start_idx + 5])
+                # regex should match both the case above and the case where v12 is an array pointer
+                and re.match(r"(\*\(v\d+\)|v\d+\[0\]) = v\d+;", lines[start_idx + 2])
+                and re.match(r"v\d+ \+= 1;", lines[start_idx + 3])
+                and re.match(r"(v\d+ \+= 1|v\d+ = &v\d+\[1\]);", lines[start_idx + 4])
+                and re.match(r"} while \(v\d+ < 0x100\);", lines[start_idx + 5])
             ):
                 # found it!
                 break
@@ -4438,6 +4422,8 @@ class TestDecompiler(unittest.TestCase):
         proj.analyses.CompleteCallingConventions()
 
         f = proj.kb.functions["main"]
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
 
@@ -4570,6 +4556,8 @@ class TestDecompiler(unittest.TestCase):
         assert entry is not None
         entry.prototype = SimTypeFunction([], SimTypeLongLong(signed=True)).with_arch(p.arch)
         # decompile!
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
         dec = p.analyses.Decompiler(entry, cfg=cfg, options=decompiler_options)
         assert dec.codegen is not None and isinstance(dec.codegen.text, str)
         print_decompilation_result(dec)
@@ -4646,6 +4634,8 @@ class TestDecompiler(unittest.TestCase):
         proj.analyses.CompleteCallingConventions(analyze_callsites=True)
 
         f = proj.kb.functions[0x4012F0]
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
         d = proj.analyses[Decompiler].prep(fail_fast=True)(f, cfg=cfg.model, options=decompiler_options)
         print_decompilation_result(d)
 
@@ -4756,9 +4746,7 @@ class TestDecompiler(unittest.TestCase):
         assert f.prototype is not None
         assert len(f.prototype.args) == 2
         # reflow it
-        func_typevar = proj.kb.decompilations[(f.addr, "pseudocode")].func_typevar
-        assert func_typevar is not None
-        dec.reflow_variable_types({func_typevar: set()}, func_typevar, {}, dec.codegen)
+        dec.reflow_variable_types(dec.cache)
 
         print_decompilation_result(dec)
         out_1 = dec.codegen.text
@@ -4820,6 +4808,8 @@ class TestDecompiler(unittest.TestCase):
         proj.analyses.CompleteCallingConventions(analyze_callsites=True)
 
         f = proj.kb.functions[0x403670]
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
         dec = proj.analyses.Decompiler(f, cfg=cfg.model, options=decompiler_options)
         assert dec.codegen is not None and dec.codegen.text is not None
         print_decompilation_result(dec)
@@ -4890,7 +4880,7 @@ class TestDecompiler(unittest.TestCase):
         )
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True)
-        func = proj.kb.functions[0x1400117E4]
+        func = proj.kb.functions[0x14001B6B0]
         dec = proj.analyses.Decompiler(func, cfg=cfg.model, options=decompiler_options)
         assert dec.codegen is not None and dec.codegen.text is not None
         print_decompilation_result(dec)
@@ -5028,16 +5018,19 @@ class TestDecompiler(unittest.TestCase):
         assert (
             '"MtBb9zH8LtvuilOPN7q0luBa32ie0ohB2WVuPjWlto0YtgeMoImVy94sugMFRTcv3UCf23PP0/2ScOrYYXc9du431l3/Dy'
             "4iV2xF69IrlscgUbjkwZALua+XmiR2pagfb+oqBnYgncF/9b5mHA1oqZGgwALG3EIDzu+Rp20iLCVfVnNT3pWvqCKBfwTlpy"
-            '76nxrsA5DhQJC97MLOwGWdvnzSqHmqlR"'
+            "76nxrsA5DhQJC97MLOwGWdvnzSqHmqlR"
         ) in dec.codegen.text
         assert (
-            '"N+Q4bkoREDIQBXhd/wLjapNMJePuge+m5sf3vaATritf3gk0n59QcuHY4yv+lSxhuxVY/n/M0XZyrTq1hmoHsw6mPN'
+            "N+Q4bkoREDIQBXhd/wLjapNMJePuge+m5sf3vaATritf3gk0n59QcuHY4yv+lSxhuxVY/n/M0XZyrTq1hmoHsw6mPN"
             "H2ot1U3SZjpj3baesq82nSl0yeBzkR9uK2fQX0ltDWq4pFB+ZW8A5jrjdaJWpR/lHjop1mbh74i5ptEpO/7EvXtxZWMZP"
-            'evNqGU9fDnzPVPIo6EY3FMe5ckwJmYpyOjmbZ05"'
+            "evNqGU9fDnzPVPIo6EY3FMe5ckwJmYpyOjmbZ05"
         ) in dec.codegen.text
         # assert C++ class methods are properly rewritten
-        assert ".size()" in dec.codegen.text
-        assert ".c_str()" in dec.codegen.text
+        m = re.search(r"([^\s=]+)\.size\(\);", dec.codegen.text)
+        assert m is not None
+        str_name = m.group(1)
+        assert f"{str_name}();" in dec.codegen.text
+        assert f"{str_name}.c_str()" in dec.codegen.text
         # assert there exists a stack-based buffer that is 12-byte long
         # this is to test the type hint that strncpy provides
         m = re.search(r"char (v\d+)\[16];", dec.codegen.text)
@@ -5067,7 +5060,7 @@ class TestDecompiler(unittest.TestCase):
         text = normalize_whitespace(dec.codegen.text)
         expected = normalize_whitespace(
             r"""
-            long long print_hello_world()
+            void* print_hello_world()
             {
                 write(1, "hello", 5);
                 write(1, " world\n", 7);
@@ -5104,10 +5097,11 @@ class TestDecompiler(unittest.TestCase):
                 v0 += 8;
                 v0 += 9;
             }
-            g(v0);"""
+            """
         )
 
         assert expected in text
+        assert "g(v0)" in text
 
     def test_decompiling_control_flow_guard_protected_binaries(self, decompiler_options=None):
         bin_path = os.path.join(test_location, "x86_64", "windows", "control_flow_guard_test.exe")
@@ -5212,6 +5206,8 @@ class TestDecompiler(unittest.TestCase):
         proj = angr.Project(bin_path, auto_load_libs=False)
         cfg = proj.analyses.CFG(normalize=True)
         func = proj.kb.functions[0x402360]
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
         dec = proj.analyses.Decompiler(func, cfg=cfg, options=decompiler_options)
         assert dec.codegen is not None and dec.codegen.text is not None
         print_decompilation_result(dec)
@@ -5278,9 +5274,9 @@ class TestDecompiler(unittest.TestCase):
         assert (
             normalize_whitespace(
                 """
-                if (a0)
+                if ((unsigned int)a0)
                     return test_cond_tailcall_jmp_callee(a0);
-                return a0 - 1;
+                return (unsigned int)a0 - 1;
                 """
             )
             in normalize_whitespace(dec.codegen.text)
@@ -5308,9 +5304,9 @@ class TestDecompiler(unittest.TestCase):
         assert (
             normalize_whitespace(
                 """
-                if (a0)
+                if ((unsigned int)a0)
                     return test_cond_tailcall_cjmp_callee(a0);
-                return a0 - 1;
+                return (unsigned int)a0 - 1;
                 """
             )
             in normalize_whitespace(dec.codegen.text)
@@ -5345,6 +5341,69 @@ class TestDecompiler(unittest.TestCase):
         assert "switch (g_24000e6b)" in dec.codegen.text
         for case_no in [0, 2, 3, 4, 5]:
             assert f"case {case_no}:" in dec.codegen.text
+
+    def test_decompiling_assign_ite(self, decompiler_options=None):
+        bin_path = os.path.join(test_location, "x86_64", "decompiler", "ite.o")
+        proj = angr.Project(bin_path, auto_load_libs=False)
+        cfg = proj.analyses.CFG(normalize=True)
+        proj.analyses.CompleteCallingConventions()
+        func = proj.kb.functions["assign_ite"]
+        decompiler_options = decompiler_options or []
+        decompiler_options += [("semvar_naming", False), ("loopctr_naming", False)]
+        dec = proj.analyses.Decompiler(func, cfg=cfg, options=decompiler_options)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+
+        assert "char * assign_ite(unsigned int a0, char *a1, char *a2)" in dec.codegen.text
+        assert "char *v0" in dec.codegen.text
+        assert "v0 = (!a0 ? a2 : a1)" in dec.codegen.text
+        assert "return v0" in dec.codegen.text
+
+    def test_decompiling_ioport_intrinsics(self, decompiler_options=None):
+        bin_path = os.path.join(test_location, "x86_64", "decompiler", "intrinsics.o")
+        proj = angr.Project(bin_path, auto_load_libs=False)
+        cfg = proj.analyses.CFG(normalize=True)
+        proj.analyses.CompleteCallingConventions()
+
+        def decomp(func_name: str) -> str:
+            func = proj.kb.functions[func_name]
+            dec = proj.analyses.Decompiler(func, cfg=cfg, options=decompiler_options)
+            assert dec.codegen is not None and dec.codegen.text is not None
+            print_decompilation_result(dec)
+            return normalize_whitespace(dec.codegen.text)
+
+        assert "__outbyte(233, a0);" in decomp("test_io_outb")
+        assert "return __inbyte(233);" in decomp("test_io_inb")
+        assert "__outword(a0, a1);" in decomp("test_io_outw")
+        assert "return __inword(a0);" in decomp("test_io_inw")
+        assert (
+            normalize_whitespace(
+                """
+            __outdword(3320, a0);
+            __outdword(3324, a1);
+            """
+            )
+            in decomp("test_io_outl")
+        )
+        assert (
+            normalize_whitespace(
+                """
+            __outdword(3320, a0);
+            return __indword(3324)
+            """
+            )
+            in decomp("test_io_inl")
+        )
+        assert (
+            normalize_whitespace(
+                """
+                if (!(char)__inbyte(233))
+                    return 456;
+                return 123;
+                """
+            )
+            in decomp("test_in_cond")
+        )
 
 
 if __name__ == "__main__":

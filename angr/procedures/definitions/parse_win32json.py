@@ -138,7 +138,37 @@ def create_angr_type_from_json(t):
         typelib.add(t["Name"], new_typedef)
     elif t["Kind"] == "Enum":
         # TODO: Handle Enums
-        ty = angr.types.SimTypeInt(signed=False, label=t["Name"])
+        match t["IntegerBase"]:
+            case "SByte":
+                ty_cls = angr.types.SimTypeChar
+                signed = True
+            case "Byte":
+                ty_cls = angr.types.SimTypeChar
+                signed = False
+            case "Int16":
+                ty_cls = angr.types.SimTypeShort
+                signed = True
+            case "UInt16":
+                ty_cls = angr.types.SimTypeShort
+                signed = False
+            case "Int32":
+                ty_cls = angr.types.SimTypeInt
+                signed = True
+            case "UInt32":
+                ty_cls = angr.types.SimTypeInt
+                signed = False
+            case "Int64":
+                ty_cls = angr.types.SimTypeLongLong
+                signed = True
+            case "UInt64":
+                ty_cls = angr.types.SimTypeLongLong
+                signed = False
+            case None:
+                ty_cls = angr.types.SimTypeInt
+                signed = False
+            case _:
+                raise NotImplementedError(f"Unsupported IntegerBase {t['IntegerBase']}")
+        ty = ty_cls(signed=signed, label=t["Name"])
         typelib.add(t["Name"], ty)
     elif t["Kind"] == "Struct":
         known_struct_names.add(t["Name"])
@@ -2435,6 +2465,14 @@ def do_it(in_dir):
             SimTypeLong(signed=True),
         ),
         "MD5Final": SimTypeFunction([SimTypeLong(signed=True)], SimTypeLong(signed=True)),
+    }
+    missing_declarations[("win32", "ntdll", "dll")] = {
+        "NtGetCurrentTeb": SimTypeFunction(
+            [], angr.types.SimTypePointer(angr.types.SimTypeRef("TEB", angr.types.SimStruct))
+        ),
+        "NtGetCurrentPeb": SimTypeFunction(
+            [], angr.types.SimTypePointer(angr.types.SimTypeRef("PEB", angr.types.SimStruct))
+        ),
     }
 
     for (prefix, lib, suffix), decls in missing_declarations.items():

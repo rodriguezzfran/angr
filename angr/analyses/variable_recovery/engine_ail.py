@@ -5,6 +5,7 @@ import logging
 
 import angr.ailment as ailment
 from angr.ailment.constant import UNDETERMINED_SIZE
+from angr.sim_variable import SimVariable
 import claripy
 from unique_log_filter import UniqueLogFilter
 
@@ -38,6 +39,7 @@ class SimEngineVRAIL(
         call_info=None,
         vvar_to_vvar: dict[int, int] | None,
         vvar_type_hints: dict[int, typeconsts.TypeConstant] | None = None,
+        func_ret_var: SimVariable | None = None,
         **kwargs,
     ):
         super().__init__(*args, vvar_type_hints=vvar_type_hints, **kwargs)
@@ -46,6 +48,7 @@ class SimEngineVRAIL(
         self.call_info = call_info or {}
         self.vvar_to_vvar = vvar_to_vvar
         self.type_lifter = type_lifter
+        self.func_ret_var = func_ret_var
 
     def _mapped_vvarid(self, vvar_id: int) -> int | None:
         if self.vvar_to_vvar is not None and vvar_id in self.vvar_to_vvar:
@@ -65,10 +68,13 @@ class SimEngineVRAIL(
             data = self._expr(stmt.src)
             size = stmt.src.bits // 8
 
-            if hasattr(stmt.dst, "write_size") and stmt.dst.write_size > size:
+            if "write_size" in stmt.dst.tags and stmt.dst.tags["write_size"] > size:
                 # zero-fill this register
                 self._assign_to_register(
-                    offset, RichR(self.state.top(stmt.dst.write_size * 8)), stmt.dst.write_size, create_variable=False
+                    offset,
+                    RichR(self.state.top(stmt.dst.tags["write_size"] * 8)),
+                    stmt.dst.tags["write_size"],
+                    create_variable=False,
                 )
 
             self._assign_to_register(offset, data, size, src=stmt.src, dst=stmt.dst)
@@ -224,21 +230,27 @@ class SimEngineVRAIL(
                     prototype = func.prototype
                 prototype_libname = func.prototype_libname
 
-        # dump the type of the return value
-        ret_ty = typevars.TypeVariable()
-        if isinstance(ret_ty, typeconsts.BottomType):
-            ret_ty = typevars.TypeVariable()
-
-        if prototype is not None and args:
+        ret_ty = None
+        if prototype is not None:
             # add type constraints
-            for arg, arg_type in zip(args, prototype.args):
-                if arg.typevar is not None:
-                    arg_type = (
-                        dereference_simtype_by_lib(arg_type, prototype_libname) if prototype_libname else arg_type
-                    )
-                    arg_ty = self.type_lifter.lift(arg_type)
-                    type_constraint = typevars.Subtype(arg.typevar, arg_ty)
+            if args:
+                for arg, arg_type in zip(args, prototype.args):
+                    if arg.typevar is not None:
+                        arg_type = (
+                            dereference_simtype_by_lib(arg_type, prototype_libname) if prototype_libname else arg_type
+                        )
+                        arg_ty = self.type_lifter.lift(arg_type)
+                        type_constraint = typevars.Subtype(arg.typevar, arg_ty)
+                        self.state.add_type_constraint(type_constraint)
+            if not expr.tags.get("is_prototype_guessed", True):
+                return_ty = self.type_lifter.lift(prototype.returnty)  # type:ignore
+                ret_ty = typevars.TypeVariable()
+                if not isinstance(ret_ty, typeconsts.BottomType):
+                    type_constraint = typevars.Subtype(ret_ty, return_ty)
                     self.state.add_type_constraint(type_constraint)
+
+        if ret_ty is None:
+            ret_ty = typevars.TypeVariable()
 
         return RichR(self.state.top(ret_expr_bits), typevar=ret_ty)
 
@@ -287,9 +299,28 @@ class SimEngineVRAIL(
                     prototype = func.prototype
                 prototype_libname = func.prototype_libname
 
-        # dump the type of the return value
-        ret_ty = typevars.TypeVariable()
-        if isinstance(ret_ty, typeconsts.BottomType):
+        ret_ty = None
+        if prototype is not None:
+            # add type constraints
+            if args:
+                for arg, arg_type in zip(args, prototype.args):
+                    if arg.typevar is not None:
+                        arg_type = (
+                            dereference_simtype_by_lib(arg_type, prototype_libname) if prototype_libname else arg_type
+                        )
+                        arg_ty = self.type_lifter.lift(arg_type)
+                        if arg.typevar is not None and isinstance(
+                            arg_ty, (typeconsts.TypeConstant, typevars.TypeVariable, typevars.DerivedTypeVariable)
+                        ):
+                            type_constraint = typevars.Subtype(arg.typevar, arg_ty)
+                            self.state.add_type_constraint(type_constraint)
+            return_ty = self.type_lifter.lift(prototype.returnty)  # type:ignore
+            ret_ty = typevars.TypeVariable()
+            if not isinstance(ret_ty, typeconsts.BottomType):
+                type_constraint = typevars.Subtype(return_ty, ret_ty)
+                self.state.add_type_constraint(type_constraint)
+
+        if ret_ty is None:
             ret_ty = typevars.TypeVariable()
 
         # TODO: Expose it as an option
@@ -316,24 +347,24 @@ class SimEngineVRAIL(
                 create_variable=create_variable,
             )
 
-        if prototype is not None and args:
-            # add type constraints
-            for arg, arg_type in zip(args, prototype.args):
-                if arg.typevar is not None:
-                    arg_type = (
-                        dereference_simtype_by_lib(arg_type, prototype_libname) if prototype_libname else arg_type
-                    )
-                    arg_ty = self.type_lifter.lift(arg_type)
-                    if arg.typevar is not None and isinstance(
-                        arg_ty, (typeconsts.TypeConstant, typevars.TypeVariable, typevars.DerivedTypeVariable)
-                    ):
-                        type_constraint = typevars.Subtype(arg.typevar, arg_ty)
-                        self.state.add_type_constraint(type_constraint)
-
     def _handle_stmt_Return(self, stmt):
         if stmt.ret_exprs:
+            if self.func_ret_var is None:
+                ret_typevar = None
+            elif self.state.typevars.has_type_variable_for(self.func_ret_var):
+                ret_typevar = self.state.typevars.get_type_variable(self.func_ret_var)
+            else:
+                ret_typevar = typevars.TypeVariable()
+                self.state.typevars.add_type_variable(self.func_ret_var, ret_typevar)
+
             for ret_expr in stmt.ret_exprs:
-                self._expr(ret_expr)
+                src = self._expr(ret_expr)
+                if isinstance(src, RichR) and src.typevar is not None and ret_typevar is not None:
+                    if src.type_constraints is not None:
+                        for tc in src.type_constraints:
+                            self.state.add_type_constraint(tc)
+                    tc = typevars.Subtype(ret_typevar, src.typevar)
+                    self.state.add_type_constraint(tc)
 
     def _handle_expr_DirtyExpression(self, expr: ailment.Expr.DirtyExpression) -> RichR:
         for op in expr.operands:
@@ -475,12 +506,25 @@ class SimEngineVRAIL(
 
     def _handle_unop_Reference(self, expr: ailment.Expr.UnaryOp):
         if isinstance(expr.operand, ailment.Expr.VirtualVariable) and expr.operand.was_stack:
+
+            refbase_typevar = None
             off = expr.operand.stack_offset
-            refbase_typevar = self.state.stack_offset_typevars.get(off, None)
+
+            # does this variable exist?
+            value: claripy.ast.BV | None = self.vvar_region.get(expr.operand.varid, None)
+            if value is not None:
+                for _, var in self.state.extract_variables(value):
+                    if var in self.state.typevars:
+                        refbase_typevar = self.state.typevars[var]
+                        break
+
             if refbase_typevar is None:
-                # allocate a new type variable
-                refbase_typevar = typevars.TypeVariable()
-                self.state.stack_offset_typevars[off] = refbase_typevar
+                if off in self.state.stack_offset_typevars:
+                    refbase_typevar = self.state.stack_offset_typevars[off]
+                else:
+                    # allocate a new type variable
+                    refbase_typevar = typevars.TypeVariable()
+                    self.state.stack_offset_typevars[off] = refbase_typevar
 
             ref_typevar = typevars.TypeVariable()
             access_derived_typevar = self._create_access_typevar(ref_typevar, False, None, 0)
@@ -502,10 +546,17 @@ class SimEngineVRAIL(
 
     def _handle_expr_ITE(self, expr: ailment.Expr.ITE):
         self._expr(expr.cond)  # cond
-        self._expr(expr.iftrue)  # r0
-        self._expr(expr.iffalse)  # r1
+        r0 = self._expr(expr.iftrue)
+        r1 = self._expr(expr.iffalse)
 
-        return RichR(self.state.top(expr.bits))
+        type_constraints = set()
+        tv = typevars.TypeVariable()
+        if r0.typevar is not None:
+            type_constraints.add(typevars.Subtype(tv, r0.typevar))
+        if r1.typevar is not None:
+            type_constraints.add(typevars.Subtype(tv, r1.typevar))
+
+        return RichR(self.state.top(expr.bits), typevar=tv, type_constraints=type_constraints)
 
     def _handle_binop_Add(self, expr):
         arg0, arg1 = expr.operands
@@ -857,6 +908,7 @@ class SimEngineVRAIL(
     _handle_binop_CmpLE = _handle_binop_Default
     _handle_binop_CmpGT = _handle_binop_Default
     _handle_binop_CmpGE = _handle_binop_Default
+    _handle_binop_CmpORD = _handle_binop_Default
     _handle_binop_CmpEQV = _handle_binop_Default
     _handle_binop_CmpNEV = _handle_binop_Default
     _handle_binop_CmpGEV = _handle_binop_Default
