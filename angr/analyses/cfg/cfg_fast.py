@@ -630,6 +630,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         collect_data_references=None,  # deprecated
         extra_cross_references=None,  # deprecated
         elf_eh_frame=None,  # deprecated
+        is_multi_lift=False,
         **extra_arch_options,
     ):
         """
@@ -802,6 +803,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         self._nodecode_step = nodecode_step
         self._indirect_calls_always_return = indirect_calls_always_return
         self._jumptable_resolver_resolve_calls = jumptable_resolver_resolves_calls
+
+        self._is_multi_lift = is_multi_lift
 
         if self._indirect_calls_always_return is None:
             # heuristics
@@ -4708,7 +4711,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             try:
                 lifted_block = self._lift(  # may raise SimTranslationError
                     addr,
-                    use_multi_blocks_cache=True,
+                    use_multi_blocks_cache=self._is_multi_lift,
                     size=distance,
                     collect_data_refs=True,
                     strict_block_end=True,
@@ -4756,7 +4759,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                     try:
                         lifted_block = self._lift(
                             addr_0,
-                            use_multi_blocks_cache=True,
+                            use_multi_blocks_cache=self._is_multi_lift,
                             size=distance,
                             collect_data_refs=True,
                             strict_block_end=True,
