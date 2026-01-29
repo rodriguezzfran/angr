@@ -5501,13 +5501,16 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                 #print(f"Cache hit #{self.cache_hits_counter} for address {addr}.")
             try:
                 block = self._blocks_cache[addr]
-                block.calculate_and_set_bytes(addr, size)  # This is necessary for the case when the block is supposed to have a different size than the irsb size it contains
                 #self.total_lifting_time += time.time() - lifting_time_start
                 # self.calls_to_lift_dict.update({f'lift-{self.call_to_lift_ctr}': time.time() - lifting_time_start})
                 # self.call_to_lift_ctr += 1
-                return block
             except KeyError:
                 print(f"Address {addr} not found in blocks cache after lifting multi blocks. Trying normal lift.")
+
+            if size >= block.size:
+                block.calculate_and_set_bytes(addr, size)  # This is necessary for the case when the block is supposed to have a different size than the irsb size it contains
+                return block
+            # else, fall through to normal lifting
 
         kwargs["extra_stop_points"] = set(self._known_thunks)
 
