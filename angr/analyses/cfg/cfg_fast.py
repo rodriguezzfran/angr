@@ -14,6 +14,7 @@ from typing import cast, Final
 import networkx
 from sortedcontainers import SortedDict
 import capstone
+#import time
 
 import claripy
 import cle
@@ -629,6 +630,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         collect_data_references=None,  # deprecated
         extra_cross_references=None,  # deprecated
         elf_eh_frame=None,  # deprecated
+        is_multi_lift=False,
         **extra_arch_options,
     ):
         """
@@ -802,6 +804,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         self._indirect_calls_always_return = indirect_calls_always_return
         self._jumptable_resolver_resolve_calls = jumptable_resolver_resolves_calls
 
+        self._is_multi_lift = is_multi_lift
+
         if self._indirect_calls_always_return is None:
             # heuristics
             self._indirect_calls_always_return = self._regions_size >= 50_000
@@ -878,6 +882,10 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         self._blocks_cache = LRUCache(maxsize=BLOCKS_CACHE_MAX_SIZE)
         self.cache_misses_counter = 0
         self.cache_hits_counter = 0
+
+        # self.total_lifting_time = 0.0
+        # self.call_to_lift_ctr = 0
+        # self.calls_to_lift_dict: dict[int, float] = {}
 
         # A mapping between address and the actual data in memory
         # self._memory_data = { }
@@ -2457,14 +2465,14 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                 if isinstance(stmt, pyvex.IRStmt.Exit):
                     branch_ins_addr = last_ins_addr if self.project.arch.branch_delay_slot else ins_addr
                     assert branch_ins_addr is not None
-                    if self._is_branch_vex_artifact_only(irsb, branch_ins_addr, stmt):
+                    if self._is_branch_vex_artifact_only(irsb, branch_ins_addr, stmt.dst, stmt.jumpkind):
                         continue
                     successors.append((i, branch_ins_addr, stmt.dst, stmt.jumpkind))
                 elif isinstance(stmt, pyvex.IRStmt.IMark):
                     last_ins_addr = ins_addr
                     ins_addr = stmt.addr + stmt.delta
         else:
-            for ins_addr, stmt_idx, exit_stmt in irsb.exit_statements:
+            for ins_addr, stmt_idx, exit_stmt_dst, exit_stmt_jumpkind in irsb.exit_statements:
                 branch_ins_addr = ins_addr
                 if (
                     self.project.arch.branch_delay_slot
@@ -2474,9 +2482,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                     idx_ = irsb.instruction_addresses.index(ins_addr)
                     if idx_ > 0:
                         branch_ins_addr = irsb.instruction_addresses[idx_ - 1]
-                elif self._is_branch_vex_artifact_only(irsb, branch_ins_addr, exit_stmt):
+                elif self._is_branch_vex_artifact_only(irsb, branch_ins_addr, exit_stmt_dst, exit_stmt_jumpkind):
                     continue
-                successors.append((stmt_idx, branch_ins_addr, exit_stmt.dst, exit_stmt.jumpkind))
+                successors.append((stmt_idx, branch_ins_addr, exit_stmt_dst, exit_stmt_jumpkind))
 
         # default statement
         default_branch_ins_addr = None
@@ -4703,7 +4711,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             try:
                 lifted_block = self._lift(  # may raise SimTranslationError
                     addr,
-                    use_multi_blocks_cache=True,
+                    use_multi_blocks_cache=self._is_multi_lift,
                     size=distance,
                     collect_data_refs=True,
                     strict_block_end=True,
@@ -4751,7 +4759,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                     try:
                         lifted_block = self._lift(
                             addr_0,
-                            use_multi_blocks_cache=True,
+                            use_multi_blocks_cache=self._is_multi_lift,
                             size=distance,
                             collect_data_refs=True,
                             strict_block_end=True,
@@ -5163,7 +5171,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                             queue.append(succ_addr)
         return to_remove
 
-    def _is_branch_vex_artifact_only(self, irsb, branch_ins_addr: int, exit_stmt) -> bool:
+    def _is_branch_vex_artifact_only(self, irsb, branch_ins_addr: int, exit_stmt_dst, exit_stmt_jumpkind) -> bool:
         """
         Check if an exit is merely the result of VEX lifting. We should drop these exits.
         These exits point to the same instruction and do not terminate the block.
@@ -5207,9 +5215,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             not self.project.arch.branch_delay_slot
             and irsb.instruction_addresses
             and branch_ins_addr != irsb.instruction_addresses[-1]
-            and isinstance(exit_stmt.dst, pyvex.const.IRConst)
-            and exit_stmt.dst.value == branch_ins_addr
-            and exit_stmt.jumpkind == "Ijk_Boring"
+            and isinstance(exit_stmt_dst, pyvex.const.IRConst)
+            and exit_stmt_dst.value == branch_ins_addr
+            and exit_stmt_jumpkind == "Ijk_Boring"
         )
 
     def _remove_jobs_by_source_node_addr(self, addr: int):
@@ -5481,6 +5489,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
 
     def _lift(self, addr, *args, opt_level=1, cross_insn_opt=False, use_multi_blocks_cache=False, size=None, **kwargs):  # pylint:disable=arguments-differ
 
+        #lifting_time_start = time.time()
+
         if use_multi_blocks_cache:
             if addr not in self._blocks_cache:
                 self.cache_misses_counter += 1
@@ -5491,15 +5501,24 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                 #print(f"Cache hit #{self.cache_hits_counter} for address {addr}.")
             try:
                 block = self._blocks_cache[addr]
-                block.calculate_and_set_bytes(addr, size)  # This is necessary for the case when the block is supposed to have a different size than the irsb size it contains
-                return block
+                #self.total_lifting_time += time.time() - lifting_time_start
+                # self.calls_to_lift_dict.update({f'lift-{self.call_to_lift_ctr}': time.time() - lifting_time_start})
+                # self.call_to_lift_ctr += 1
             except KeyError:
                 print(f"Address {addr} not found in blocks cache after lifting multi blocks. Trying normal lift.")
 
+            if size >= block.size:
+                block.calculate_and_set_bytes(addr, size)  # This is necessary for the case when the block is supposed to have a different size than the irsb size it contains
+                return block
+            # else, fall through to normal lifting
+
         kwargs["extra_stop_points"] = set(self._known_thunks)
 
-        return super()._lift(addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)
-
+        block = super()._lift(addr, *args, size=size, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)
+        #self.total_lifting_time += time.time() - lifting_time_start
+        # self.calls_to_lift_dict.update({f'lift-{self.call_to_lift_ctr}': time.time() - lifting_time_start})
+        # self.call_to_lift_ctr += 1
+        return block
 
 
     #

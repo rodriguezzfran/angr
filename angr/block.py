@@ -297,6 +297,8 @@ class Block(Serializable):
         )
 
     def calculate_and_set_bytes(self, addr, size, byte_string=None) -> None:
+        if not size:
+            size = self.size
         if byte_string is None:
             if self._backup_state is not None:
                 buffer, _, offset = self._vex_engine._load_bytes(addr - self.thumb, size, state=self._backup_state)
