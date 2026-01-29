@@ -883,9 +883,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         self.cache_misses_counter = 0
         self.cache_hits_counter = 0
 
-        self.total_lifting_time = 0.0
-        self.call_to_lift_ctr = 0
-        self.calls_to_lift_dict: dict[int, float] = {}
+        # self.total_lifting_time = 0.0
+        # self.call_to_lift_ctr = 0
+        # self.calls_to_lift_dict: dict[int, float] = {}
 
         # A mapping between address and the actual data in memory
         # self._memory_data = { }
@@ -5489,7 +5489,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
 
     def _lift(self, addr, *args, opt_level=1, cross_insn_opt=False, use_multi_blocks_cache=False, size=None, **kwargs):  # pylint:disable=arguments-differ
 
-        lifting_time_start = time.time()
+        #lifting_time_start = time.time()
 
         if use_multi_blocks_cache:
             if addr not in self._blocks_cache:
@@ -5502,19 +5502,19 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             try:
                 block = self._blocks_cache[addr]
                 block.calculate_and_set_bytes(addr, size)  # This is necessary for the case when the block is supposed to have a different size than the irsb size it contains
-                self.total_lifting_time += time.time() - lifting_time_start
-                self.calls_to_lift_dict.update({f'lift-{self.call_to_lift_ctr}': time.time() - lifting_time_start})
-                self.call_to_lift_ctr += 1
+                #self.total_lifting_time += time.time() - lifting_time_start
+                # self.calls_to_lift_dict.update({f'lift-{self.call_to_lift_ctr}': time.time() - lifting_time_start})
+                # self.call_to_lift_ctr += 1
                 return block
             except KeyError:
                 print(f"Address {addr} not found in blocks cache after lifting multi blocks. Trying normal lift.")
 
         kwargs["extra_stop_points"] = set(self._known_thunks)
 
-        block = super()._lift(addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)
-        self.total_lifting_time += time.time() - lifting_time_start
-        self.calls_to_lift_dict.update({f'lift-{self.call_to_lift_ctr}': time.time() - lifting_time_start})
-        self.call_to_lift_ctr += 1
+        block = super()._lift(addr, *args, size=size, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)
+        #self.total_lifting_time += time.time() - lifting_time_start
+        # self.calls_to_lift_dict.update({f'lift-{self.call_to_lift_ctr}': time.time() - lifting_time_start})
+        # self.call_to_lift_ctr += 1
         return block
 
 
