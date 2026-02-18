@@ -14,7 +14,6 @@ from typing import cast, Final
 import networkx
 from sortedcontainers import SortedDict
 import capstone
-#import time
 
 import claripy
 import cle
@@ -882,10 +881,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         self._blocks_cache = LRUCache(maxsize=BLOCKS_CACHE_MAX_SIZE)
         self.cache_misses_counter = 0
         self.cache_hits_counter = 0
-
-        # self.total_lifting_time = 0.0
-        # self.call_to_lift_ctr = 0
-        # self.calls_to_lift_dict: dict[int, float] = {}
 
         # A mapping between address and the actual data in memory
         # self._memory_data = { }
@@ -1872,6 +1867,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             # Normalize the control flow graph first before rediscovering all functions
             self.normalize()
 
+        # Commented for the moment - this will be deprecated
         # if self.project.arch.name in ("X86", "AMD64", "MIPS32"):
         #     self._remove_redundant_overlapping_blocks()
         # elif is_arm_arch(self.project.arch):
@@ -5453,22 +5449,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             return callee_func.returning
         return None
 
-    def print_blocks_cache_stats(self):
-        print(f"-----------------CACHE STATS-----------------")
-        print(f"Blocks cache max size: {self._blocks_cache.maxsize}")
-        print(f"Blocks cache current size: {self._blocks_cache.currsize}")
-        print(f"Cache hits: {self.cache_hits_counter}")
-        print(f"Cache misses: {self.cache_misses_counter}")
-        total_accesses = self.cache_hits_counter + self.cache_misses_counter
-        if total_accesses > 0:
-            print(f"Cache hit rate: {self.cache_hits_counter / total_accesses:.2%}")
-            print(f"Cache miss rate: {self.cache_misses_counter / total_accesses:.2%}")
-        else:
-            print("No cache accesses recorded.")
-        print("CACHE CONTENTS:")
-        for addr, block in self._blocks_cache.items():
-            print(f"\tAddress: {addr}, Block: {block}")
-
     def _lift_multi(self, addr, *args, opt_level=1, cross_insn_opt=False, **kwargs) -> None:
         # Test to lift multiple blocks
         try:
@@ -5477,33 +5457,24 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             )
 
             for i, block in enumerate(blocks_list):
-                # print(f"Block {i}:")
-                # block.pp()
+
                 # Cache all lifted blocks
                 self._blocks_cache[block.addr] = block
-
-                #self.print_blocks_cache_stats()
 
         except Exception as e:
             print(f"Error lifting multiple blocks: {e}")
 
     def _lift(self, addr, *args, opt_level=1, cross_insn_opt=False, use_multi_blocks_cache=False, size=None, **kwargs):  # pylint:disable=arguments-differ
 
-        #lifting_time_start = time.time()
-
         if use_multi_blocks_cache:
             if addr not in self._blocks_cache:
                 self.cache_misses_counter += 1
-                #print(f"Cache miss #{self.cache_misses_counter} for address {addr}. Lifting multi blocks to populate the cache...")
                 self._lift_multi(addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)  # This puts many blocks into the cache
             else:
                 self.cache_hits_counter += 1
-                #print(f"Cache hit #{self.cache_hits_counter} for address {addr}.")
             try:
                 block = self._blocks_cache[addr]
-                #self.total_lifting_time += time.time() - lifting_time_start
-                # self.calls_to_lift_dict.update({f'lift-{self.call_to_lift_ctr}': time.time() - lifting_time_start})
-                # self.call_to_lift_ctr += 1
+
                 if size >= block.size:
                     block.calculate_and_set_bytes(addr, size)  # This is necessary for the case when the block is supposed to have a different size than the irsb size it contains
                     return block
@@ -5514,11 +5485,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         kwargs["extra_stop_points"] = set(self._known_thunks)
 
         block = super()._lift(addr, *args, size=size, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)
-        #self.total_lifting_time += time.time() - lifting_time_start
-        # self.calls_to_lift_dict.update({f'lift-{self.call_to_lift_ctr}': time.time() - lifting_time_start})
-        # self.call_to_lift_ctr += 1
-        return block
 
+        return block
 
     #
     # Public methods
