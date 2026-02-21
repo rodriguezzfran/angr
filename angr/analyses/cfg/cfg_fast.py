@@ -8,6 +8,8 @@ import re
 import string
 from collections import defaultdict, OrderedDict
 from enum import Enum, unique
+from cachetools import FIFOCache, LRUCache, LFUCache
+from typing import cast, Final
 
 import networkx
 from sortedcontainers import SortedDict
@@ -627,6 +629,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         collect_data_references=None,  # deprecated
         extra_cross_references=None,  # deprecated
         elf_eh_frame=None,  # deprecated
+        is_multi_lift=False,
         **extra_arch_options,
     ):
         """
@@ -800,6 +803,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         self._indirect_calls_always_return = indirect_calls_always_return
         self._jumptable_resolver_resolve_calls = jumptable_resolver_resolves_calls
 
+        self._is_multi_lift = is_multi_lift
+
         if self._indirect_calls_always_return is None:
             # heuristics
             self._indirect_calls_always_return = self._regions_size >= 50_000
@@ -867,6 +872,15 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         self._job_ctr = 0
         self._decoding_assumptions: dict[int, DecodingAssumption] = {}
         self._decoding_assumption_relations: networkx.DiGraph = None  # type:ignore
+
+
+        # A cache for storing previously decoded blocks
+        # This way we can decode many blocks at once with multi block lifting, and
+        # then for each block reuse the decoded IRSB without having to lift it again.
+        BLOCKS_CACHE_MAX_SIZE: Final[int] = 150000
+        self._blocks_cache = LRUCache(maxsize=BLOCKS_CACHE_MAX_SIZE)
+        self.cache_misses_counter = 0
+        self.cache_hits_counter = 0
 
         # A mapping between address and the actual data in memory
         # self._memory_data = { }
@@ -1853,10 +1867,11 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             # Normalize the control flow graph first before rediscovering all functions
             self.normalize()
 
-        if self.project.arch.name in ("X86", "AMD64", "MIPS32"):
-            self._remove_redundant_overlapping_blocks()
-        elif is_arm_arch(self.project.arch):
-            self._remove_redundant_overlapping_blocks(function_alignment=4, is_arm=True)
+        # Commented for the moment - this will be deprecated
+        # if self.project.arch.name in ("X86", "AMD64", "MIPS32"):
+        #     self._remove_redundant_overlapping_blocks()
+        # elif is_arm_arch(self.project.arch):
+        #     self._remove_redundant_overlapping_blocks(function_alignment=4, is_arm=True)
 
         self._updated_nonreturning_functions = set()
         # Revisit all edges and rebuild all functions to correctly handle returning/non-returning functions.
@@ -2446,14 +2461,14 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                 if isinstance(stmt, pyvex.IRStmt.Exit):
                     branch_ins_addr = last_ins_addr if self.project.arch.branch_delay_slot else ins_addr
                     assert branch_ins_addr is not None
-                    if self._is_branch_vex_artifact_only(irsb, branch_ins_addr, stmt):
+                    if self._is_branch_vex_artifact_only(irsb, branch_ins_addr, stmt.dst, stmt.jumpkind):
                         continue
                     successors.append((i, branch_ins_addr, stmt.dst, stmt.jumpkind))
                 elif isinstance(stmt, pyvex.IRStmt.IMark):
                     last_ins_addr = ins_addr
                     ins_addr = stmt.addr + stmt.delta
         else:
-            for ins_addr, stmt_idx, exit_stmt in irsb.exit_statements:
+            for ins_addr, stmt_idx, exit_stmt_dst, exit_stmt_jumpkind in irsb.exit_statements:
                 branch_ins_addr = ins_addr
                 if (
                     self.project.arch.branch_delay_slot
@@ -2463,9 +2478,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                     idx_ = irsb.instruction_addresses.index(ins_addr)
                     if idx_ > 0:
                         branch_ins_addr = irsb.instruction_addresses[idx_ - 1]
-                elif self._is_branch_vex_artifact_only(irsb, branch_ins_addr, exit_stmt):
+                elif self._is_branch_vex_artifact_only(irsb, branch_ins_addr, exit_stmt_dst, exit_stmt_jumpkind):
                     continue
-                successors.append((stmt_idx, branch_ins_addr, exit_stmt.dst, exit_stmt.jumpkind))
+                successors.append((stmt_idx, branch_ins_addr, exit_stmt_dst, exit_stmt_jumpkind))
 
         # default statement
         default_branch_ins_addr = None
@@ -2501,7 +2516,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                     if job.jumpkind in {"Ijk_Boring", "Ijk_FakeRet"}:
                         self._decoding_assumption_relations.add_edge(real_addr, job.addr & 0xFFFF_FFFE)
 
+
         return entries
+
 
     def _create_jobs(
         self,
@@ -3763,6 +3780,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         self.graph.remove_node(node)
         self._model.remove_node(node.addr, node)
 
+        self._remove_block_from_blocks_cache(node.addr)
+
         # We wanna remove the function as well
         if node.addr in self.kb.functions:
             del self.kb.functions[node.addr]
@@ -3927,6 +3946,10 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
 
     def _clean_pending_exits(self):
         self._pending_jobs.cleanup()
+
+    def _remove_block_from_blocks_cache(self, addr):
+        if addr in self._blocks_cache:
+            del self._blocks_cache[addr]
 
     #
     # Graph utils
@@ -4682,15 +4705,16 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             irsb: pyvex.IRSB | PcodeIRSB | None = None
             lifted_block: Block = None  # type:ignore
             try:
-                lifted_block = self._lift(
+                lifted_block = self._lift(  # may raise SimTranslationError
                     addr,
+                    use_multi_blocks_cache=self._is_multi_lift,
                     size=distance,
                     collect_data_refs=True,
                     strict_block_end=True,
                     load_from_ro_regions=True,
                     initial_regs=initial_regs,
                 )
-                irsb = lifted_block.vex_nostmt  # may raise SimTranslationError
+                irsb = lifted_block.vex_nostmt
             except SimTranslationError:
                 nodecode = True
 
@@ -4715,6 +4739,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                     nodecode = True
 
                 if (nodecode or irsb.size == 0 or irsb.jumpkind == "Ijk_NoDecode") and switch_mode_on_nodecode:
+                    # we could not decode the block, so it's presence in the blocks cache is unnecessary
+                    self._remove_block_from_blocks_cache(addr)
+
                     # maybe the current mode is wrong?
                     nodecode = False
                     addr_0 = addr + 1 if addr % 2 == 0 else addr - 1
@@ -4728,6 +4755,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                     try:
                         lifted_block = self._lift(
                             addr_0,
+                            use_multi_blocks_cache=self._is_multi_lift,
                             size=distance,
                             collect_data_refs=True,
                             strict_block_end=True,
@@ -4787,6 +4815,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                         self._decoding_assumptions[real_addr] = assumption
 
             if nodecode or irsb.size == 0 or irsb.jumpkind == "Ijk_NoDecode":
+                # we could not decode the block, so it's presence in the blocks cache is unnecessary
+                self._remove_block_from_blocks_cache(addr)
+
                 # decoding error
                 # is the current location already occupied and marked as non-code?
                 # it happens in cases like the following:
@@ -5136,7 +5167,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                             queue.append(succ_addr)
         return to_remove
 
-    def _is_branch_vex_artifact_only(self, irsb, branch_ins_addr: int, exit_stmt) -> bool:
+    def _is_branch_vex_artifact_only(self, irsb, branch_ins_addr: int, exit_stmt_dst, exit_stmt_jumpkind) -> bool:
         """
         Check if an exit is merely the result of VEX lifting. We should drop these exits.
         These exits point to the same instruction and do not terminate the block.
@@ -5180,9 +5211,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             not self.project.arch.branch_delay_slot
             and irsb.instruction_addresses
             and branch_ins_addr != irsb.instruction_addresses[-1]
-            and isinstance(exit_stmt.dst, pyvex.const.IRConst)
-            and exit_stmt.dst.value == branch_ins_addr
-            and exit_stmt.jumpkind == "Ijk_Boring"
+            and isinstance(exit_stmt_dst, pyvex.const.IRConst)
+            and exit_stmt_dst.value == branch_ins_addr
+            and exit_stmt_jumpkind == "Ijk_Boring"
         )
 
     def _remove_jobs_by_source_node_addr(self, addr: int):
@@ -5207,6 +5238,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             assert self._decoding_assumption_relations is not None
             if assumption_addr in self._decoding_assumption_relations:
                 self._decoding_assumption_relations.remove_node(assumption_addr)
+
+            self._remove_block_from_blocks_cache(assumption_addr)
 
             assumption = self._decoding_assumptions.get(assumption_addr)
             if assumption is None:
@@ -5416,9 +5449,44 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             return callee_func.returning
         return None
 
-    def _lift(self, addr, *args, opt_level=1, cross_insn_opt=False, **kwargs):  # pylint:disable=arguments-differ
+    def _lift_multi(self, addr, *args, opt_level=1, cross_insn_opt=False, **kwargs) -> None:
+        # Test to lift multiple blocks
+        try:
+            blocks_list = self.project.factory.multi_blocks(
+                addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, skip_stmts=True, max_blocks=1000, backup_state=self._base_state, **kwargs
+            )
+
+            for block in blocks_list:
+                # Cache all lifted blocks
+                self._blocks_cache[block.addr] = block
+
+        except Exception as e:
+            print(f"Error lifting multiple blocks: {e}")
+
+    def _lift(self, addr, *args, opt_level=1, cross_insn_opt=False, use_multi_blocks_cache=False, size=None, **kwargs):  # pylint:disable=arguments-differ
+
+        if use_multi_blocks_cache:
+            if addr not in self._blocks_cache:
+                self.cache_misses_counter += 1
+                self._lift_multi(addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)  # This puts many blocks into the cache
+            else:
+                self.cache_hits_counter += 1
+            try:
+                block = self._blocks_cache[addr]
+
+                if size >= block.size:
+                    if block.vex_nostmt.size == 0 or block.vex_nostmt.jumpkind == "Ijk_NoDecode":
+                        block.calculate_and_set_bytes(addr, size)  # This is necessary for the case when the block is supposed to have a different size than the size of the irsb it contains
+                    return block
+                # else, fall through to normal lifting
+            except KeyError:
+                print(f"Address {addr} not found in blocks cache after lifting multi blocks. Trying normal lift.")
+
         kwargs["extra_stop_points"] = set(self._known_thunks)
-        return super()._lift(addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)
+
+        block = super()._lift(addr, *args, size=size, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)
+
+        return block
 
     #
     # Public methods

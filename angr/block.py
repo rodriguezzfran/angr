@@ -219,6 +219,7 @@ class Block(Serializable):
         const_prop=False,
         initial_regs=None,
         skip_stmts=False,
+        irsb: IRSB | PcodeIRSB | None = None,
     ):
         if arch is not None:
             self.arch = arch
@@ -251,8 +252,8 @@ class Block(Serializable):
         if self._project is None and byte_string is None:
             raise ValueError('"byte_string" has to be specified if "project" is not provided.')
 
-        self._vex = None
-        self._vex_nostmt = None
+        self._vex = irsb if (irsb is not None and not skip_stmts) else None
+        self._vex_nostmt = irsb if (irsb is not None and skip_stmts) else None
         self._disassembly = None
         self._capstone = None
         self._pcode = None
@@ -271,6 +272,8 @@ class Block(Serializable):
         if size is None:
             if byte_string is not None:
                 size = len(byte_string)
+            elif irsb is not None:
+                size = irsb.size
             else:
                 vex = self._lift_nocache(skip_stmts)
                 size = vex.size
@@ -287,9 +290,18 @@ class Block(Serializable):
         else:
             self._parse_vex_info(self._vex)
 
+        self.calculate_and_set_bytes(
+            addr,
+            size,
+            byte_string=byte_string
+        )
+
+    def calculate_and_set_bytes(self, addr, size, byte_string=None) -> None:
+        if not size:
+            size = self.size
         if byte_string is None:
-            if backup_state is not None:
-                buffer, _, offset = self._vex_engine._load_bytes(addr - thumb, size, state=backup_state)
+            if self._backup_state is not None:
+                buffer, _, offset = self._vex_engine._load_bytes(addr - self.thumb, size, state=self._backup_state)
                 self._bytes = buffer[offset:]
                 if type(self._bytes) is memoryview:
                     self._bytes = bytes(self._bytes)

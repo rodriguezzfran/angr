@@ -5,6 +5,7 @@ import threading
 from typing import overload, TYPE_CHECKING
 
 import archinfo
+import pyvex
 from archinfo.arch_soot import ArchSoot, SootAddressDescriptor
 
 from angr.exploration_techniques.base import ExplorationTechnique
@@ -31,7 +32,6 @@ if TYPE_CHECKING:
     from angr import Project, SimCC
     from angr.engines import SimEngine
 
-
 l = logging.getLogger(name=__name__)
 
 
@@ -52,8 +52,11 @@ class AngrObjectFactory:
         self._tls = threading.local()
 
         if default_engine is None:
-            if isinstance(project.arch, archinfo.ArchPcode) and UberEnginePcode is not None:
-                l.warning("Creating project with the experimental 'UberEnginePcode' engine")
+            if isinstance(project.arch,
+                          archinfo.ArchPcode) and UberEnginePcode is not None:
+                l.warning(
+                    "Creating project with the experimental 'UberEnginePcode' engine"
+                )
                 self.default_engine_factory = UberEnginePcode
             else:
                 self.default_engine_factory = UberEngine
@@ -66,8 +69,9 @@ class AngrObjectFactory:
 
         self.project = project
         self._default_cc = default_cc(
-            project.arch.name, platform=project.simos.name if project.simos is not None else None, default=SimCCUnknown
-        )
+            project.arch.name,
+            platform=project.simos.name if project.simos is not None else None,
+            default=SimCCUnknown)
         self.procedure_engine = ProcedureEngine(project)
 
     def __getstate__(self):
@@ -80,7 +84,8 @@ class AngrObjectFactory:
     @property
     def default_engine(self):
         if not hasattr(self._tls, "default_engine"):
-            self._tls.default_engine = self.default_engine_factory(self.project)
+            self._tls.default_engine = self.default_engine_factory(
+                self.project)
         return self._tls.default_engine
 
     def snippet(self, addr, jumpkind=None, **block_opts):
@@ -205,7 +210,9 @@ class AngrObjectFactory:
         """
         return self.project.simos.state_call(addr, *args, **kwargs)
 
-    def simulation_manager(self, thing: list[SimState] | SimState | None = None, **kwargs) -> SimulationManager:
+    def simulation_manager(self,
+                           thing: list[SimState] | SimState | None = None,
+                           **kwargs) -> SimulationManager:
         """
         Constructs a new simulation manager.
 
@@ -231,7 +238,8 @@ class AngrObjectFactory:
         elif isinstance(thing, SimState):
             thing = [thing]
         else:
-            raise AngrError(f"BadType to initialize SimulationManager: {thing!r}")
+            raise AngrError(
+                f"BadType to initialize SimulationManager: {thing!r}")
 
         return SimulationManager(self.project, active_states=thing, **kwargs)
 
@@ -331,7 +339,8 @@ class AngrObjectFactory:
         const_prop=False,
         initial_regs=None,
         skip_stmts=False,
-    ) -> Block: ...
+    ) -> Block:
+        ...
 
     # pylint: disable=unused-argument, no-self-use, function-redefined
     @overload
@@ -354,7 +363,8 @@ class AngrObjectFactory:
         const_prop=False,
         cross_insn_opt=True,
         skip_stmts=False,
-    ) -> SootBlock: ...
+    ) -> SootBlock:
+        ...
 
     def block(
         self,
@@ -377,8 +387,11 @@ class AngrObjectFactory:
         initial_regs=None,
         skip_stmts=False,
     ):
-        if isinstance(self.project.arch, ArchSoot) and isinstance(addr, SootAddressDescriptor):
-            return SootBlock(addr, arch=self.project.arch, project=self.project)
+        if isinstance(self.project.arch, ArchSoot) and isinstance(
+                addr, SootAddressDescriptor):
+            return SootBlock(addr,
+                             arch=self.project.arch,
+                             project=self.project)
 
         if insn_bytes is not None:
             byte_string = insn_bytes
@@ -405,7 +418,88 @@ class AngrObjectFactory:
         )
 
     def fresh_block(self, addr, size, backup_state=None):
-        return Block(addr, project=self.project, size=size, backup_state=backup_state)
+        return Block(addr,
+                     project=self.project,
+                     size=size,
+                     backup_state=backup_state)
+
+    def multi_blocks(
+            self,
+            addr: int,
+            thumb=False,
+            backup_state=None,
+            opt_level=None,
+            traceflags=0,
+            strict_block_end=None,
+            collect_data_refs: bool = False,
+            cross_insn_opt=True,
+            load_from_ro_regions=False,
+            const_prop=False,
+            initial_regs=None,
+            skip_stmts=False,
+            max_blocks: int | None = 100) -> list[Block]:
+        """
+        Lifts multiple blocks starting at a given address. After lifting one block, the lifter will attempt to lift
+        more blocks following branch targets, until it reaches the maximum number of blocks specified.
+
+        :param addr:                The address to start at
+        :param max_blocks:          The maximum number of blocks to lift. If None, there is no limit.
+        :param collect_data_refs:   Whether to collect data references in the blocks
+        :param skip_stmts:          Whether to skip statements in the blocks
+        :return:                    A list of Block objects
+        """
+
+        vex_engine = self.project.factory.default_engine  # type: ignore
+
+        # TODO: Ensure that the engine supports multi-block lifting
+        if not vex_engine.support_multiblock_lifting:
+            raise AngrError(
+                f"The vex engine {vex_engine.__class__.__name__} does not support multi-block lifting."
+            )
+
+        clemory = None
+        if self.project is not None:
+            clemory = (self.project.loader.memory_ro_view
+                       if self.project.loader.memory_ro_view is not None else
+                       self.project.loader.memory)
+
+        initial_regs = initial_regs if (collect_data_refs
+                                        or const_prop) else None
+
+        if initial_regs is not None:
+            for offset, init_regs_size, value in initial_regs:  # pylint:disable=not-an-iterable
+                pyvex.pvc.register_initial_register_value(offset, init_regs_size, value)
+
+        irsbs = vex_engine.lift_vex_multi(
+            addr=addr,
+            state=backup_state,
+            clemory=clemory,
+            arch=self.project.arch,
+            traceflags=traceflags,
+            thumb=thumb,
+            opt_level=opt_level,
+            strict_block_end=strict_block_end,
+            skip_stmts=skip_stmts,
+            collect_data_refs=collect_data_refs,
+            cross_insn_opt=cross_insn_opt,
+            load_from_ro_regions=load_from_ro_regions,
+            const_prop=const_prop,
+            max_blocks=max_blocks)
+
+        if initial_regs:
+            pyvex.pvc.reset_initial_register_values()
+
+        blocks = []
+        for irsb in irsbs:
+            block = Block(irsb.addr,
+                          project=self.project,
+                          arch=self.project.arch,
+                          skip_stmts=skip_stmts,
+                          size=irsb.size,
+                          irsb=irsb)
+            blocks.append(block)
+
+        return blocks
 
     cc.SimRegArg = SimRegArg
     cc.SimStackArg = SimStackArg
