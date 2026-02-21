@@ -5456,8 +5456,7 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                 addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, skip_stmts=True, max_blocks=1000, backup_state=self._base_state, **kwargs
             )
 
-            for i, block in enumerate(blocks_list):
-
+            for block in blocks_list:
                 # Cache all lifted blocks
                 self._blocks_cache[block.addr] = block
 
@@ -5476,7 +5475,8 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
                 block = self._blocks_cache[addr]
 
                 if size >= block.size:
-                    block.calculate_and_set_bytes(addr, size)  # This is necessary for the case when the block is supposed to have a different size than the irsb size it contains
+                    if block.vex_nostmt.size == 0 or block.vex_nostmt.jumpkind == "Ijk_NoDecode":
+                        block.calculate_and_set_bytes(addr, size)  # This is necessary for the case when the block is supposed to have a different size than the size of the irsb it contains
                     return block
                 # else, fall through to normal lifting
             except KeyError:
