@@ -62,6 +62,7 @@ VEX_IRSB_MAX_SIZE = 400
 
 l = logging.getLogger(name=__name__)
 
+import time
 
 class ContinueScanningNotification(RuntimeError):
     """
@@ -879,8 +880,15 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
         # then for each block reuse the decoded IRSB without having to lift it again.
         BLOCKS_CACHE_MAX_SIZE: Final[int] = 150000
         self._blocks_cache = LRUCache(maxsize=BLOCKS_CACHE_MAX_SIZE)
-        self.cache_misses_counter = 0
-        self.cache_hits_counter = 0
+
+        # Time measurements
+        self._multi_lifting_times: list[float] = [] # Store the time taken for each multi-block lifting, size of this list is the amount of multi-block liftings performed
+        self._fallbacks_to_single_block_lifting_cnt: int = 0
+        self._single_block_lifted_by_multi_lift_cnt: int = 0
+        self._is_indirect_jump_list: list[bool] = [] # Store whether each jump in the binary is an indirect jump or not, size of this list is the amount of jumps in the binary. Useful for analyzing the correlation between indirect jumps and amount of times multi-lifting lifts a single block.
+        self._total_blocks_lifted_by_multi_lift: int = 0
+        self._lift_multi_addrs = []
+        self._batches_sizes = []
 
         # A mapping between address and the actual data in memory
         # self._memory_data = { }
@@ -1868,10 +1876,10 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             self.normalize()
 
         # Commented for the moment - this will be deprecated
-        # if self.project.arch.name in ("X86", "AMD64", "MIPS32"):
-        #     self._remove_redundant_overlapping_blocks()
-        # elif is_arm_arch(self.project.arch):
-        #     self._remove_redundant_overlapping_blocks(function_alignment=4, is_arm=True)
+        if self.project.arch.name in ("X86", "AMD64", "MIPS32"):
+            self._remove_redundant_overlapping_blocks()
+        elif is_arm_arch(self.project.arch):
+            self._remove_redundant_overlapping_blocks(function_alignment=4, is_arm=True)
 
         self._updated_nonreturning_functions = set()
         # Revisit all edges and rebuild all functions to correctly handle returning/non-returning functions.
@@ -2586,6 +2594,12 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
             and target_addr == irsb.addr + irsb.size
         ):
             jumpkind = "Ijk_Boring"
+
+        if target_addr is None:
+            app_elem = True
+        else:
+            app_elem = False
+        self._is_indirect_jump_list.append(app_elem)
 
         if target_addr is None:
             # The target address is not a concrete value
@@ -5452,13 +5466,23 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
     def _lift_multi(self, addr, *args, opt_level=1, cross_insn_opt=False, **kwargs) -> None:
         # Test to lift multiple blocks
         try:
+            init_time = time.perf_counter()
             blocks_list = self.project.factory.multi_blocks(
                 addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, skip_stmts=True, max_blocks=1000, backup_state=self._base_state, **kwargs
             )
+            self._multi_lifting_times.append(time.perf_counter() - init_time)
+
+            self._batches_sizes.append(len(blocks_list))
+
+            self._total_blocks_lifted_by_multi_lift += len(blocks_list)
+
+            if len(blocks_list) == 1:
+                self._single_block_lifted_by_multi_lift_cnt += 1
 
             for block in blocks_list:
                 # Cache all lifted blocks
                 self._blocks_cache[block.addr] = block
+                self._lift_multi_addrs.append((block.addr, time.time()))
 
         except Exception as e:
             print(f"Error lifting multiple blocks: {e}")
@@ -5467,20 +5491,17 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
 
         if use_multi_blocks_cache:
             if addr not in self._blocks_cache:
-                self.cache_misses_counter += 1
                 self._lift_multi(addr, *args, opt_level=opt_level, cross_insn_opt=cross_insn_opt, **kwargs)  # This puts many blocks into the cache
-            else:
-                self.cache_hits_counter += 1
             try:
                 block = self._blocks_cache[addr]
-
                 if size >= block.size:
                     if block.vex_nostmt.size == 0 or block.vex_nostmt.jumpkind == "Ijk_NoDecode":
                         block.calculate_and_set_bytes(addr, size)  # This is necessary for the case when the block is supposed to have a different size than the size of the irsb it contains
                     return block
                 # else, fall through to normal lifting
+                self._fallbacks_to_single_block_lifting_cnt += 1
             except KeyError:
-                print(f"Address {addr} not found in blocks cache after lifting multi blocks. Trying normal lift.")
+                print(f"Address {addr} not found in blocks cache after try lifting multi blocks. Trying normal lift.")
 
         kwargs["extra_stop_points"] = set(self._known_thunks)
 
