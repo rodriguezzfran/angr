@@ -163,6 +163,10 @@ class PCodeInsn(DisassemblerInsn):
             return getattr(self.insn, item)
         raise AttributeError
 
+import time
+lift_no_skip_stmts_times = []
+lift_skip_stmts_times = []
+
 
 class Block(Serializable):
     """
@@ -404,7 +408,10 @@ class Block(Serializable):
     @property
     def vex(self) -> IRSB | PcodeIRSB:
         if not self._vex:
+            init_time = time.perf_counter()
             self._vex = self._lift_nocache(False)
+            lift_no_skip_stmts_times.append(time.perf_counter() - init_time)
+
             self._parse_vex_info(self._vex)
 
         return self._vex
@@ -416,7 +423,10 @@ class Block(Serializable):
         if self._vex:
             return self._vex
 
+        init_time = time.perf_counter()
         self._vex_nostmt = self._lift_nocache(True)
+        lift_skip_stmts_times.append(time.perf_counter() - init_time)
+
         self._parse_vex_info(self._vex_nostmt)
 
         return self._vex_nostmt
